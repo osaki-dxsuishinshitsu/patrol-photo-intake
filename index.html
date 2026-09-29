@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; connect-src 'none'; form-action 'none'; base-uri 'none'">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex, nofollow">
+  <title>パトロール写真の送信</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>パトロール写真の送信</h1>
+    <p class="lead">記入済みのチェックシートの写真を、メールで送ります。ログインは要りません。</p>
+  </header>
+
+  <main>
+    <p id="config-error" class="error" role="alert" hidden></p>
+
+    <!-- 1. 入力 -->
+    <section id="step-input" aria-labelledby="h-input">
+      <h2 id="h-input">1. 内容を入れる</h2>
+
+      <div class="field">
+        <label for="date">実施日</label>
+        <input type="date" id="date" name="date" required>
+        <p class="hint">今日より後の日は選べません。</p>
+      </div>
+
+      <div class="field">
+        <span class="label" id="l-site">部署・現場</span>
+        <div id="site-fixed" hidden>
+          <p class="fixed">現場 <strong id="site-fixed-code"></strong>(部署 <span id="site-fixed-dept"></span>)</p>
+          <button type="button" id="site-change" class="link">違う現場を選ぶ</button>
+        </div>
+        <div id="site-choose" hidden>
+          <select id="site-select" aria-labelledby="l-site"></select>
+          <p class="hint">配られた説明の紙にある現場のコードを選んでください。</p>
+        </div>
+      </div>
+
+      <fieldset class="field">
+        <legend>実施した会社(複数選べます)</legend>
+        <p id="company-empty" class="hint" hidden>先に現場を選ぶと、その現場の会社が出ます。</p>
+        <div id="company-list"></div>
+      </fieldset>
+
+      <div class="field">
+        <label for="photos">チェックシートの写真(1 枚以上)</label>
+        <input type="file" id="photos" accept="image/*" multiple>
+        <p class="hint">先にスマホのカメラで撮っておき、ここでは「写真ライブラリ」(Android は「ギャラリー」など)から選んでください。このページの「写真を撮る」で撮った写真は、あとでメールに添付できないことがあります。文字が読めるように、紙全体を明るい所で撮ってください。</p>
+        <p id="photo-count" class="count"></p>
+        <p id="photo-over" class="error" role="status" hidden></p>
+        <ul id="photo-list" class="photos"></ul>
+      </div>
+
+      <div id="missing-box" class="missing" hidden>
+        <p>まだ入っていない項目があります:</p>
+        <ul id="missing" aria-live="polite"></ul>
+      </div>
+
+      <button type="button" id="to-confirm" class="primary" disabled>確認へ</button>
+    </section>
+
+    <!-- 2. 確認 -->
+    <section id="step-confirm" aria-labelledby="h-confirm" hidden>
+      <h2 id="h-confirm">2. 内容を確かめる</h2>
+      <dl class="summary">
+        <dt>実施日</dt><dd id="c-date"></dd>
+        <dt>部署</dt><dd id="c-dept"></dd>
+        <dt>現場</dt><dd id="c-site"></dd>
+        <dt>実施した会社</dt><dd id="c-companies"></dd>
+        <dt>写真</dt><dd id="c-photos"></dd>
+        <dt>送り先</dt><dd id="c-mailbox"></dd>
+        <dt>件名</dt><dd id="c-subject" class="mono"></dd>
+      </dl>
+      <ul id="c-photo-list" class="photos"></ul>
+      <p class="hint">「メールを作成」を押すと、メールアプリが開きます。送り先・件名・本文は入っています。</p>
+      <div class="buttons">
+        <button type="button" id="back">戻って直す</button>
+        <button type="button" id="make-mail" class="primary">メールを作成</button>
+      </div>
+    </section>
+
+    <!-- 3. メールアプリで写真を添付して送信 -->
+    <section id="step-done" aria-labelledby="h-done" hidden>
+      <h2 id="h-done">3. 写真を添付して送信</h2>
+      <ol class="steps">
+        <li>開いたメールで、添付(クリップや写真のマーク)を押します。</li>
+        <li>さきほど選んだチェックシートの写真 <strong id="d-photos"></strong> 枚を添付します。</li>
+        <li>件名と本文は変えずに、送信します。</li>
+      </ol>
+      <div class="buttons">
+        <button type="button" id="reopen-mail">メールをもう一度開く</button>
+      </div>
+
+      <h3>メールアプリが開かないとき</h3>
+      <p class="hint">LINE などのアプリの中で開いているときは、右上のメニューから「ブラウザで開く」(Safari / Chrome)を選んでやり直してください。それでも開かないときは、お使いのメールで新しいメールを作り、下の 3 つをコピーして貼り付け、写真を添付して送信してください。</p>
+      <dl class="copy">
+        <dt>宛先</dt>
+        <dd><span id="x-to" class="mono"></span> <button type="button" class="copy-btn" data-copy="x-to">コピー</button></dd>
+        <dt>件名</dt>
+        <dd><span id="x-subject" class="mono"></span> <button type="button" class="copy-btn" data-copy="x-subject">コピー</button></dd>
+        <dt>本文</dt>
+        <dd><pre id="x-body" class="mono"></pre> <button type="button" class="copy-btn" data-copy="x-body">コピー</button></dd>
+      </dl>
+      <p id="copy-status" class="hint" aria-live="polite"></p>
+      <p class="hint">それでも送れないときは、配られた説明の紙の連絡先へ。</p>
+
+      <div class="buttons">
+        <button type="button" id="restart">最初から入力する</button>
+      </div>
+    </section>
+  </main>
+
+  <script src="roster.js"></script>
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
