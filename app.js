@@ -17,6 +17,9 @@
   var MAX_NAME = 30;
   // 書式 v2 の立場(受け側の流れの式 H と同じ)
   var ROLES_V2 = ['代表者', '安全衛生責任者', 'その他'];
+  // 写真つきで渡すときの縮小(長い辺の画素数と JPEG の品質)。紙の文字が読める大きさを残す
+  var MAX_SIDE = 2000;
+  var JPEG_QUALITY = 0.85;
   // 1 通に付ける写真の上限(大きなメールは届かないことがあるため)
   var MAX_PHOTOS = 10;
 
@@ -175,10 +178,18 @@
   }
 
   // 本文。機械が読むのは BEGIN 行と END 行の間だけ(振り分け規約)
-  function buildBody(state, config, meta) {
+  // opts.viaShare = 共有(写真つき)で渡すとき。宛先と件名が入らないメールアプリのために、先頭に書いておく
+  function buildBody(state, config, meta, opts) {
     var members = normalizeMembers(config, state.site, state.members);
-    var lines = [
-      'このメールに、ページで選んだチェックシートの写真(' + state.photoCount + ' 枚)を添付してから送信してください。',
+    var head = (opts && opts.viaShare) ? [
+      '宛先と件名が空なら、次の 2 行をそれぞれ宛先・件名に貼り付けてから送信してください。',
+      '宛先: ' + config.mailbox,
+      '件名: ' + buildSubject(state, config),
+      '写真(' + state.photoCount + ' 枚)が付いていることを確かめてください。'
+    ] : [
+      'このメールに、ページで選んだチェックシートの写真(' + state.photoCount + ' 枚)を添付してから送信してください。'
+    ];
+    var lines = head.concat([
       '下の --- で囲んだ部分は書き換えないでください。',
       '',
       beginMarker(config),
@@ -190,7 +201,7 @@
       'photos=' + state.photoCount,
       'created=' + meta.created,
       endMarker(config)
-    ];
+    ]);
     return lines.join('\r\n');
   }
 
@@ -206,6 +217,7 @@
     if (!CODE_RE.test(config.formId || '')) problems.push('formId');
     if (!(config.formVersion >= 1)) problems.push('formVersion');
     if (!MAILBOX_RE.test(config.mailbox || '')) problems.push('mailbox');
+    if (typeof config.share !== 'boolean') problems.push('share');
     (config.sites || []).forEach(function (s) {
       if (!CODE_RE.test(s.code || '') || !CODE_RE.test(s.dept || '')) problems.push('sites:' + s.code);
     });
@@ -435,6 +447,8 @@
     }).join('、');
     $('c-photos').textContent = state.photoCount + ' 枚';
     $('c-mailbox').textContent = config.mailbox;
+    $('s-to').textContent = config.mailbox;
+    $('s-subject').textContent = buildSubject(state, config);
     $('c-subject').textContent = buildSubject(state, config);
     var list = $('c-photo-list');
     list.textContent = '';
@@ -446,9 +460,9 @@
   }
 
   // 端末の中でのコピーだけ(外部への通信はしない)。使えない端末では文字を選択状態にする
-  function copyText(node) {
+  function copyText(node, statusId) {
     var text = node.textContent;
-    var status = $('copy-status');
+    var status = $(statusId || 'copy-status');
     function selectIt() {
       var range = doc.createRange();
       range.selectNodeContents(node);
@@ -468,6 +482,153 @@
 
   function openMail() {
     root.location.href = buildMailto(state, config, meta);
+  }
+
+  /* ---- 写真つきで渡す(Web Share API)。使えない端末は mailto に戻る ---- */
+
+  var shareFiles = null; // 縮小済みの写真(確認画面に入った時点で作る)
+  var shareToken = 0;    // 古い準備の結果を捨てるための番号
+
+  function shareApiPresent() {
+    var n = root.navigator;
+    return !!(n && typeof n.share === 'function' && typeof n.canShare === 'function');
+  }
+
+  // 写真を長い辺 MAX_SIDE px の JPEG に縮小する(画像の位置情報などは付かない)。
+  // できない端末・失敗・時間切れのときは元の写真のまま。使い終わった画像と canvas はすぐ手放す
+  function shrinkPhoto(file, n) {
+    return new Promise(function (resolve) {
+      var canvas = doc.createElement('canvas');
+      var ctx = canvas.getContext ? canvas.getContext('2d') : null;
+      if (!ctx || !canvas.toBlob) { resolve(file); return; }
+      var url = root.URL.createObjectURL(file);
+      var img = new root.Image();
+      var done = false;
+      var timer = null;
+      function finish(f) {
+        if (done) return;
+        done = true;
+        root.clearTimeout(timer);
+        img.onload = img.onerror = null;
+        img.removeAttribute('src');
+        canvas.width = canvas.height = 0;
+        root.URL.revokeObjectURL(url);
+        resolve(f);
+      }
+      timer = root.setTimeout(function () { finish(file); }, 15000);
+      img.onload = function () {
+        try {
+          var s = Math.min(1, MAX_SIDE / Math.max(img.naturalWidth, img.naturalHeight));
+          canvas.width = Math.round(img.naturalWidth * s);
+          canvas.height = Math.round(img.naturalHeight * s);
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          canvas.toBlob(function (blob) {
+            try {
+              finish(blob ? new root.File([blob], 'patrol-' + n + '.jpg', { type: 'image/jpeg' }) : file);
+            } catch (e) {
+              finish(file);
+            }
+          }, 'image/jpeg', JPEG_QUALITY);
+        } catch (e) {
+          finish(file);
+        }
+      };
+      img.onerror = function () { finish(file); };
+      img.src = url;
+    });
+  }
+
+  // 共有を使わない表示に戻す(使えない端末・準備の失敗)
+  function showMailtoOnly() {
+    $('share-box').hidden = true;
+    $('share-mail').hidden = true;
+    $('make-mail').textContent = 'メールを作成';
+    $('make-mail').className = 'primary';
+    $('mailto-hint').hidden = false;
+  }
+
+  // 確認画面に入ったら、共有に使う写真を先に用意しておく(押してから準備すると、端末が共有を断ることがある)。
+  // メモリを使い過ぎないよう 1 枚ずつ縮小し、画面を離れたら(番号が変わったら)途中でやめる
+  function prepareShare() {
+    var token = ++shareToken;
+    shareFiles = null;
+    var btn = $('share-mail');
+    if (!(config.share === true && shareApiPresent() && photos.length > 0)) {
+      showMailtoOnly();
+      return;
+    }
+    $('share-box').hidden = false;
+    $('share-error').hidden = true;
+    btn.hidden = false;
+    btn.disabled = true;
+    btn.textContent = '写真を準備しています…';
+    $('make-mail').textContent = '写真を自分で付けて送る';
+    $('make-mail').className = '';
+    $('mailto-hint').hidden = true;
+    var files = [];
+    var chain = Promise.resolve();
+    photos.forEach(function (p, i) {
+      chain = chain.then(function () {
+        if (token !== shareToken) return;
+        return shrinkPhoto(p.file, i + 1).then(function (f) { files.push(f); });
+      });
+    });
+    chain.then(function () {
+      if (token !== shareToken) return;
+      if (files.length !== photos.length || !root.navigator.canShare({ files: files })) {
+        showMailtoOnly();
+        return;
+      }
+      shareFiles = files;
+      btn.disabled = false;
+      btn.textContent = '写真つきでメールを作成';
+    }).catch(function () {
+      if (token === shareToken) showMailtoOnly();
+    });
+  }
+
+  function fillDone(mode) {
+    $('d-photos').textContent = String(state.photoCount);
+    $('x-to').textContent = config.mailbox;
+    $('x-subject').textContent = buildSubject(state, config);
+    $('x-body').textContent = buildBody(state, config, meta, { viaShare: mode === 'share' });
+    $('done-mailto').hidden = mode === 'share';
+    $('reopen-mail').hidden = mode === 'share';
+    $('done-share').hidden = mode !== 'share';
+    $('reshare').hidden = mode !== 'share';
+    $('done-to-mailto').hidden = mode !== 'share';
+    $('done-error').hidden = true;
+    $('h-done').textContent = mode === 'share' ? '3. 確かめて送信' : '3. 写真を添付して送信';
+  }
+
+  // 共有する。失敗を知らせる欄は、いま見えている画面のもの(確認画面か完了画面)を使う
+  var sharing = false; // 共有の画面を開いている間は二重に開かない
+
+  function shareMail() {
+    if (!shareFiles || sharing) return;
+    sharing = true;
+    var fromDone = !$('step-done').hidden;
+    var errBox = fromDone ? $('done-error') : $('share-error');
+    var subject = buildSubject(state, config);
+    // 件名を先にコピーしておく(件名が入らないメールアプリで貼り付けられるように。失敗しても続ける)
+    if (root.navigator.clipboard && root.navigator.clipboard.writeText) {
+      root.navigator.clipboard.writeText(subject).then(null, function () {});
+    }
+    errBox.hidden = true;
+    root.navigator.share({
+      title: subject,
+      text: buildBody(state, config, meta, { viaShare: true }),
+      files: shareFiles
+    }).then(function () {
+      sharing = false;
+      fillDone('share');
+      show('step-done');
+    }, function (e) {
+      sharing = false;
+      if (e && e.name === 'AbortError') return; // 共有の画面を閉じただけ
+      errBox.hidden = false;
+      errBox.textContent = '写真つきで渡せませんでした。「写真を自分で付けて送る」で送ってください。';
+    });
   }
 
   function init() {
@@ -512,8 +673,25 @@
       meta = { ref: newRef(), created: isoWithOffset(new Date()) };
       renderConfirm();
       show('step-confirm');
+      prepareShare();
+    });
+    $('share-mail').addEventListener('click', function () {
+      if (validate(state, config).length) {
+        show('step-input');
+        refresh();
+        return;
+      }
+      shareMail();
+    });
+    $('reshare').addEventListener('click', shareMail);
+    $('done-to-mailto').addEventListener('click', function () {
+      fillDone('mailto');
+      show('step-done');
+      openMail();
     });
     $('back').addEventListener('click', function () {
+      shareToken++; // 写真の準備を途中でやめる
+      shareFiles = null;
       show('step-input');
     });
     $('make-mail').addEventListener('click', function () {
@@ -522,17 +700,14 @@
         refresh();
         return;
       }
-      $('d-photos').textContent = String(state.photoCount);
-      $('x-to').textContent = config.mailbox;
-      $('x-subject').textContent = buildSubject(state, config);
-      $('x-body').textContent = buildBody(state, config, meta);
+      fillDone('mailto');
       show('step-done');
       openMail();
     });
     $('reopen-mail').addEventListener('click', openMail);
     Array.prototype.forEach.call(doc.querySelectorAll('.copy-btn'), function (btn) {
       btn.addEventListener('click', function () {
-        copyText($(btn.getAttribute('data-copy')));
+        copyText($(btn.getAttribute('data-copy')), btn.getAttribute('data-status'));
       });
     });
     $('restart').addEventListener('click', function () {

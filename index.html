@@ -77,9 +77,18 @@
         <dt>件名</dt><dd id="c-subject" class="mono"></dd>
       </dl>
       <ul id="c-photo-list" class="photos"></ul>
-      <p class="hint">「メールを作成」を押すと、メールアプリが開きます。送り先・件名・本文は入っています。</p>
+      <p id="mailto-hint" class="hint">「メールを作成」を押すと、メールアプリが開きます。送り先・件名・本文は入っています。</p>
+      <div id="share-box" class="sharebox" hidden>
+        <p>「写真つきでメールを作成」を押すと共有の画面が出ます。<strong>メールアプリ</strong>を選ぶと、写真と本文が入ったメールが開きます。</p>
+        <p>宛先と件名が空のときは、本文の先頭にある「宛先:」「件名:」の行をそれぞれ貼り付けてから送信してください(件名は、ボタンを押したときにコピーできた端末ではコピー済みです)。</p>
+        <p class="fixed">宛先: <strong class="mono" id="s-to"></strong> <button type="button" class="copy-btn" data-copy="s-to" data-status="s-copy-status">コピー</button></p>
+        <p class="fixed">件名: <strong class="mono" id="s-subject"></strong> <button type="button" class="copy-btn" data-copy="s-subject" data-status="s-copy-status">コピー</button></p>
+        <p id="s-copy-status" class="hint" aria-live="polite"></p>
+        <p id="share-error" class="error" role="alert" hidden></p>
+      </div>
       <div class="buttons">
         <button type="button" id="back">戻って直す</button>
+        <button type="button" id="share-mail" class="primary" hidden disabled>写真を準備しています…</button>
         <button type="button" id="make-mail" class="primary">メールを作成</button>
       </div>
     </section>
@@ -87,14 +96,22 @@
     <!-- 3. メールアプリで写真を添付して送信 -->
     <section id="step-done" aria-labelledby="h-done" hidden>
       <h2 id="h-done">3. 写真を添付して送信</h2>
-      <ol class="steps">
+      <ol id="done-mailto" class="steps">
         <li>開いたメールで、添付(クリップや写真のマーク)を押します。</li>
         <li>さきほど選んだチェックシートの写真 <strong id="d-photos"></strong> 枚を添付します。</li>
         <li>件名と本文は変えずに、送信します。</li>
       </ol>
+      <ol id="done-share" class="steps" hidden>
+        <li>メールの宛先と件名を確かめます。空なら、本文の先頭の「宛先:」「件名:」の行を貼り付けます。</li>
+        <li>写真が付いていることを確かめます。</li>
+        <li>本文の --- で囲んだ部分は変えずに、送信します。</li>
+      </ol>
       <div class="buttons">
         <button type="button" id="reopen-mail">メールをもう一度開く</button>
+        <button type="button" id="reshare" hidden>もう一度共有する</button>
+        <button type="button" id="done-to-mailto" hidden>写真を自分で付けて送る</button>
       </div>
+      <p id="done-error" class="error" role="alert" hidden></p>
 
       <h3>メールアプリが開かないとき</h3>
       <p class="hint">LINE などのアプリの中で開いているときは、右上のメニューから「ブラウザで開く」(Safari / Chrome)を選んでやり直してください。それでも開かないときは、お使いのメールで新しいメールを作り、下の 3 つをコピーして貼り付け、写真を添付して送信してください。</p>

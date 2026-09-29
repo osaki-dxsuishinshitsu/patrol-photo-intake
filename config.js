@@ -16,6 +16,9 @@
     roles: ['代表者', '安全衛生責任者', 'その他'],
     otherRole: 'その他',
 
+    // 写真つきで渡す(Web Share API)を使うか。false にすると全端末で mailto(写真は本人が添付)だけになる
+    share: true,
+
     // 受け口 = 試行用の共有メールボックス 1 件
     mailbox: 'patrol-intake@example.invalid',
 

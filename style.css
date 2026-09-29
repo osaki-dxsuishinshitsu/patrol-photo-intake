@@ -111,3 +111,5 @@ h3 { font-size: 1rem; margin: 24px 0 6px; }
 .roles .check { min-height: 44px; margin-bottom: 4px; }
 .name-label { display: block; font-weight: 700; margin: 6px 0 4px; }
 .roles input[type=text] { font-size: 17px; width: 100%; min-height: 48px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--fg); }
+.sharebox { background: var(--panel); border-radius: 6px; padding: 8px 12px; margin-top: 12px; }
+.sharebox p { margin: 4px 0; }
