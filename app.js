@@ -13,6 +13,10 @@
   var MAILBOX_RE = /^[A-Za-z0-9._-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$/;
   // 1 通で選べる会社の上限(受け側の流れと同じ)
   var MAX_COMPANIES = 20;
+  // 立場が「その他」のときに入れる氏名の長さの上限
+  var MAX_NAME = 30;
+  // 書式 v2 の立場(受け側の流れの式 H と同じ)
+  var ROLES_V2 = ['代表者', '安全衛生責任者', 'その他'];
   // 1 通に付ける写真の上限(大きなメールは届かないことがあるため)
   var MAX_PHOTOS = 10;
 
@@ -51,16 +55,37 @@
     return out;
   }
 
-  // 選ばれた会社をその現場の一覧の並び順にそろえ、重複と一覧外を落とす
-  function normalizeCompanies(config, siteCode, list) {
+  // 選ばれた実施者をその現場の一覧の並び順にそろえ、重複(同じ会社)と一覧外を落とす
+  // member = { company, role, name }(name は立場が「その他」のときだけ使う)
+  function normalizeMembers(config, siteCode, list) {
     var picked = list || [];
-    return companiesForSite(config, siteCode).filter(function (c) {
-      return picked.indexOf(c) !== -1;
+    var out = [];
+    companiesForSite(config, siteCode).forEach(function (c) {
+      for (var i = 0; i < picked.length; i++) {
+        if (picked[i] && picked[i].company === c) {
+          var role = picked[i].role || '';
+          var name = role === config.otherRole ? String(picked[i].name || '').trim() : '';
+          out.push({ company: c, role: role, name: name });
+          return;
+        }
+      }
     });
+    return out;
+  }
+
+  // 氏名(立場が「その他」のとき): 1〜30 文字、本文の区切り(; | =・改行)と先頭の = + - @ は不可
+  function isValidName(n) {
+    return typeof n === 'string' && n.length >= 1 && n.length <= MAX_NAME &&
+      !/[;|=\r\n]/.test(n) && !/^[=+\-@]/.test(n);
+  }
+
+  // 本文の members の 1 要素 = 会社名|立場(その他のときは |氏名 を足す)
+  function memberToken(config, m) {
+    return m.company + '|' + m.role + (m.role === config.otherRole ? '|' + m.name : '');
   }
 
   /*
-   * state = { date, dept, site, companies: [], photoCount }
+   * state = { date, dept, site, members: [{ company, role, name }], photoCount }
    * 戻り値 = 欠けている・誤っている項目の一覧。空なら確認へ進める。
    */
   function validate(state, config, now) {
@@ -88,12 +113,21 @@
       errors.push({ field: 'dept', message: '部署と現場の組み合わせが一覧と違います' });
     }
 
-    var companies = normalizeCompanies(config, s.site, s.companies);
-    if (companies.length === 0) {
+    var members = normalizeMembers(config, s.site, s.members);
+    if (members.length === 0) {
       errors.push({ field: 'companies', message: '実施した会社を 1 社以上選んでください' });
-    } else if (companies.length > MAX_COMPANIES) {
+    } else if (members.length > MAX_COMPANIES) {
       errors.push({ field: 'companies', message: '会社は ' + MAX_COMPANIES + ' 社までにしてください' });
     }
+    members.forEach(function (m) {
+      if ((config.roles || []).indexOf(m.role) === -1) {
+        errors.push({ field: 'roles', message: '「' + m.company + '」で実施した人の立場を選んでください' });
+      } else if (m.role === config.otherRole && !m.name) {
+        errors.push({ field: 'roles', message: '「' + m.company + '」で実施した人の氏名を入れてください' });
+      } else if (m.role === config.otherRole && !isValidName(m.name)) {
+        errors.push({ field: 'roles', message: '「' + m.company + '」の氏名は ' + MAX_NAME + ' 文字までで、; | = は使えません(先頭に + - @ も使えません)' });
+      }
+    });
 
     if (!(s.photoCount >= 1)) {
       errors.push({ field: 'photos', message: 'チェックシートの写真を 1 枚以上選んでください' });
@@ -142,7 +176,7 @@
 
   // 本文。機械が読むのは BEGIN 行と END 行の間だけ(振り分け規約)
   function buildBody(state, config, meta) {
-    var companies = normalizeCompanies(config, state.site, state.companies);
+    var members = normalizeMembers(config, state.site, state.members);
     var lines = [
       'このメールに、ページで選んだチェックシートの写真(' + state.photoCount + ' 枚)を添付してから送信してください。',
       '下の --- で囲んだ部分は書き換えないでください。',
@@ -152,7 +186,7 @@
       'date=' + state.date,
       'dept=' + state.dept,
       'site=' + state.site,
-      'companies=' + companies.join(';'),
+      'members=' + members.map(function (m) { return memberToken(config, m); }).join(';'),
       'photos=' + state.photoCount,
       'created=' + meta.created,
       endMarker(config)
@@ -179,12 +213,14 @@
       var c = r.company;
       // ; = 改行は本文の区切り、先頭の = + - @ は表計算で式と読まれるため使えない
       // 前後の空白も不可(受け側は空白を取ってマスタと照らすため、食い違いの元になる)
-      if (typeof c !== 'string' || !c || /[;\r\n=]/.test(c) || /^[=+\-@]/.test(c) || c !== c.trim()) problems.push('roster[' + i + '].company');
+      if (typeof c !== 'string' || !c || /[;|\r\n=]/.test(c) || /^[=+\-@]/.test(c) || c !== c.trim()) problems.push('roster[' + i + '].company');
       if (!findSite(config, r.site)) problems.push('roster[' + i + '].site');
       // 公開してよいのは現場コードと会社名だけ(ほかの項目が紛れ込んだら止める)
       if (Object.keys(r).some(function (k) { return k !== 'site' && k !== 'company'; })) problems.push('roster[' + i + '].keys');
     });
     if (!(config.roster || []).length) problems.push('roster');
+    // 立場は本文の書式(版)の一部。受け側の流れと同じ 3 つ・同じ順でなければ止める(変えるときは版を上げる)
+    if (JSON.stringify(config.roles) !== JSON.stringify(ROLES_V2) || config.otherRole !== ROLES_V2[2]) problems.push('roles');
     // どの現場にも会社が 1 社以上あること(無いと選べずに止まる)
     (config.sites || []).forEach(function (s) {
       if (!companiesForSite(config, s.code).length) problems.push('roster:' + s.code);
@@ -197,7 +233,9 @@
     isRealDate: isRealDate,
     findSite: findSite,
     companiesForSite: companiesForSite,
-    normalizeCompanies: normalizeCompanies,
+    normalizeMembers: normalizeMembers,
+    memberToken: memberToken,
+    isValidName: isValidName,
     validate: validate,
     buildSubject: buildSubject,
     buildBody: buildBody,
@@ -218,7 +256,7 @@
   var config = root.PATROL_CONFIG || { sites: [] };
   config.roster = root.PATROL_ROSTER || [];
 
-  var state = { date: '', dept: '', site: '', companies: [], photoCount: 0 };
+  var state = { date: '', dept: '', site: '', members: [], photoCount: 0 };
   var photos = []; // { file, url }
   var meta = null; // 確認画面に入った時点で作る { ref, created }
 
@@ -279,28 +317,80 @@
     });
   }
 
-  // 選んだ現場の会社だけを出す。現場を変えたら、その現場に無い会社の選択は外す
+  // 作り直した後も、操作していた欄にフォーカスを戻す
+  function refocus(id) {
+    var f = $(id);
+    if (f) f.focus();
+  }
+
+  function findMember(company) {
+    for (var i = 0; i < state.members.length; i++) {
+      if (state.members[i].company === company) return state.members[i];
+    }
+    return null;
+  }
+
+  // 選んだ現場の会社だけを出す。現場を変えたら、その現場に無い会社の選択は外す。
+  // 会社を選ぶと、その会社で実施した人の立場を選ぶ欄が開く(「その他」のときだけ氏名の欄)
   function renderCompanies() {
     var box = $('company-list');
-    state.companies = normalizeCompanies(config, state.site, state.companies);
+    state.members = normalizeMembers(config, state.site, state.members);
     box.textContent = '';
     $('company-empty').hidden = !!state.site;
     companiesForSite(config, state.site).forEach(function (c, i) {
+      var member = findMember(c);
+      var wrap = el('div', { 'class': 'member' });
       var id = 'company-' + i;
       var label = el('label', { 'for': id, 'class': 'check' });
       var input = el('input', { type: 'checkbox', id: id, value: c });
-      input.checked = state.companies.indexOf(c) !== -1;
+      input.checked = !!member;
       input.addEventListener('change', function () {
-        var picked = [];
-        box.querySelectorAll('input[type=checkbox]').forEach(function (x) {
-          if (x.checked) picked.push(x.value);
-        });
-        state.companies = picked;
+        if (input.checked) {
+          state.members.push({ company: c, role: '', name: '' });
+        } else {
+          state.members = state.members.filter(function (m) { return m.company !== c; });
+        }
+        renderCompanies();
         refresh();
+        refocus(id);
       });
       label.appendChild(input);
       label.appendChild(el('span', null, c));
-      box.appendChild(label);
+      wrap.appendChild(label);
+
+      if (member) {
+        var group = el('fieldset', { 'class': 'roles' });
+        group.appendChild(el('legend', null, c + ' で実施した人の立場'));
+        config.roles.forEach(function (r, j) {
+          var rid = id + '-role-' + j;
+          var rl = el('label', { 'for': rid, 'class': 'check' });
+          var radio = el('input', { type: 'radio', id: rid, name: id + '-role', value: r });
+          radio.checked = member.role === r;
+          radio.addEventListener('change', function () {
+            member.role = r;
+            renderCompanies();
+            refresh();
+            refocus(rid);
+          });
+          rl.appendChild(radio);
+          rl.appendChild(el('span', null, r));
+          group.appendChild(rl);
+        });
+        if (member.role === config.otherRole) {
+          var nid = id + '-name';
+          group.appendChild(el('label', { 'for': nid, 'class': 'name-label' }, '氏名'));
+          var nameInput = el('input', { type: 'text', id: nid, maxlength: String(MAX_NAME), autocomplete: 'name' });
+          nameInput.value = member.name || '';
+          nameInput.addEventListener('input', function () {
+            member.name = nameInput.value;
+            refresh();
+          });
+          group.appendChild(nameInput);
+          group.appendChild(el('p', { 'class': 'hint' }, '氏名はパトロールの実施記録として社内でだけ使います。メールで受け付けに届くだけで、このページには残りません。'));
+        }
+        wrap.appendChild(group);
+      }
+      box.appendChild(wrap);
     });
   }
 
@@ -340,7 +430,9 @@
     $('c-date').textContent = state.date;
     $('c-dept').textContent = state.dept;
     $('c-site').textContent = state.site;
-    $('c-companies').textContent = normalizeCompanies(config, state.site, state.companies).join('、');
+    $('c-companies').textContent = normalizeMembers(config, state.site, state.members).map(function (m) {
+      return m.company + '(' + m.role + (m.role === config.otherRole ? ': ' + m.name : '') + ')';
+    }).join('、');
     $('c-photos').textContent = state.photoCount + ' 枚';
     $('c-mailbox').textContent = config.mailbox;
     $('c-subject').textContent = buildSubject(state, config);

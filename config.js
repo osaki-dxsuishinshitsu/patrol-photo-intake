@@ -10,7 +10,11 @@
   var PATROL_CONFIG = {
     // 件名の識別子と本文の書式の版(識別子の台帳に登録したもの)
     formId: 'PTRL-PHOTO',
-    formVersion: 1,
+    formVersion: 2,
+
+    // 実施した人の立場(会社ごとに 1 つ選ぶ)。otherRole のときだけ氏名を入力する
+    roles: ['代表者', '安全衛生責任者', 'その他'],
+    otherRole: 'その他',
 
     // 受け口 = 試行用の共有メールボックス 1 件
     mailbox: 'patrol-intake@example.invalid',
