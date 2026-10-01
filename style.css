@@ -100,16 +100,20 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .steps li { margin-bottom: 8px; }
 .fixed { margin: 0; }
 h3 { font-size: 1rem; margin: 24px 0 6px; }
-.copy { margin: 8px 0 0; }
-.copy dt { font-weight: 700; margin-top: 8px; }
-.copy dd { margin: 2px 0 0; display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; }
-.copy pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--panel); padding: 6px 8px; border-radius: 6px; flex: 1 1 100%; }
-.copy-btn { min-height: 44px; padding: 4px 14px; font-size: 16px; }
 .member { margin-bottom: 8px; }
 .roles { margin: 0 0 10px 12px; padding: 6px 10px; border: 0; border-left: 3px solid var(--border); }
 .roles legend { font-weight: 400; font-size: 0.95rem; color: var(--muted); padding: 0; margin-bottom: 4px; }
 .roles .check { min-height: 44px; margin-bottom: 4px; }
 .name-label { display: block; font-weight: 700; margin: 6px 0 4px; }
 .roles input[type=text] { font-size: 17px; width: 100%; min-height: 48px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--fg); }
-.sharebox { background: var(--panel); border-radius: 6px; padding: 8px 12px; margin-top: 12px; }
-.sharebox p { margin: 4px 0; }
+.outbox-bar { background: var(--panel); border-left: 4px solid var(--accent); padding: 8px 12px; margin: 12px 0; font-weight: 700; }
+.outbox-bar.bad { border-left-color: var(--error); }
+.status { font-size: 1.1rem; font-weight: 700; padding: 10px 12px; border-radius: 6px; background: var(--panel); border-left: 4px solid var(--border); }
+.status.ok { border-left-color: var(--accent); }
+.status.wait { border-left-color: var(--border); }
+.status.bad { border-left-color: var(--error); color: var(--error); }
+.records { list-style: none; padding: 0; margin: 8px 0 0; }
+.rec { border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; margin-bottom: 8px; }
+.rec p { margin: 2px 0; }
+.rec-head { font-weight: 700; }
+.rec-blocked { border-color: var(--error); }
