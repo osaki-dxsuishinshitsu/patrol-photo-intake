@@ -18,6 +18,10 @@
     roles: ['代表者', '安全衛生責任者', 'その他'],
     otherRole: 'その他',
 
+    // 社員が「自分が実施」を選んだときの会社の文字(実在の社名ではない固定の文字。編成表からは取らない)。
+    // roster.js の全現場に同じ文字の行が要る(会社を選ぶ欄には出さない。仕様 D52)
+    ownCompany: 'TEST-自社',
+
     // 受付(Google Apps Script の web app)の URL。User が設置したデプロイ「受付 v1」(2026-10-01)の URL。
     // 受付の更新は既存のデプロイの編集で行い、この URL を変えない(docs/patrol-intake/gas-setup-guide.md)
     endpoint: 'https://script.google.com/macros/s/AKfycbwk64H-ZWNE7nCq3-b7G77UYvHb28lk55fbvRk6qgTsi9bHtBQCKgJRiEbZciKEWuHM7A/exec',

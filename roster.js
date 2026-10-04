@@ -15,10 +15,13 @@
     { site: 'TEST-S01', company: 'TEST-協力会社A' },
     { site: 'TEST-S01', company: 'TEST-協力会社B' },
     { site: 'TEST-S01', company: 'TEST-協力会社C' },
+    { site: 'TEST-S01', company: 'TEST-自社' },
     { site: 'TEST-S02', company: 'TEST-協力会社A' },
     { site: 'TEST-S02', company: 'TEST-協力会社C' },
+    { site: 'TEST-S02', company: 'TEST-自社' },
     { site: 'TEST-S03', company: 'TEST-協力会社B' },
-    { site: 'TEST-S03', company: 'TEST-協力会社D' }
+    { site: 'TEST-S03', company: 'TEST-協力会社D' },
+    { site: 'TEST-S03', company: 'TEST-自社' }
   ];
 
   root.PATROL_ROSTER = PATROL_ROSTER;

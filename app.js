@@ -79,6 +79,71 @@
     return out;
   }
 
+  // 会社を選ぶ欄に出す会社(自社の行は出さない。自社は「自分が実施」でだけ使う。仕様 D52)
+  function visibleCompanies(config, siteCode) {
+    return companiesForSite(config, siteCode).filter(function (c) { return c !== config.ownCompany; });
+  }
+
+  // URL の s で読む要素の数の上限と、画面に出す一覧に無いコードの数の上限(仕様 D49)
+  var MAX_PARAM_ITEMS = 50;
+  var MAX_SHOWN_UNKNOWN = 3;
+
+  // コードの接頭辞(最初の - まで。- が無ければ空)
+  function codePrefix(code) {
+    var i = code.indexOf('-');
+    return i === -1 ? '' : code.slice(0, i + 1);
+  }
+
+  // URL の s(現場コードをカンマで並べたもの)を読む。仕様 D48・D49
+  // 戻り値 = { codes: 一覧にあるコード(重複なし・URL の順), unknown: 一覧に無い要素の数,
+  //           shown: そのうち画面に出してよいもの(コードの形で、一覧のコードと同じ接頭辞のもの。最大 3 件) }
+  function parseSiteParam(config, raw) {
+    var codes = [], shown = [], unknown = 0, seen = {};
+    var prefixes = config.sites.map(function (s) { return codePrefix(s.code); });
+    // 一覧のコードに - の無いものがあれば、接頭辞では絞らない
+    var byPrefix = prefixes.indexOf('') === -1;
+    String(raw || '').split(',', MAX_PARAM_ITEMS).forEach(function (part) {
+      var v = part.trim();
+      if (!v || seen['$' + v]) return;
+      seen['$' + v] = true;
+      if (findSite(config, v)) {
+        codes.push(v);
+      } else {
+        unknown++;
+        // URL の文字は、コードの形で一覧と同じ接頭辞のものだけを画面に出す(任意の文を公式の枠に表示させない)
+        if (CODE_RE.test(v) && (!byPrefix || prefixes.indexOf(codePrefix(v)) !== -1) && shown.length < MAX_SHOWN_UNKNOWN) shown.push(v);
+      }
+    });
+    return { codes: codes, unknown: unknown, shown: shown };
+  }
+
+  // 入口の種類: 一覧にあるコードが 1 つ = single(現場 QR)・2 つ以上 = list(社員用リンク)・0 = all(全現場)
+  function entryMode(codes) {
+    return codes.length === 1 ? 'single' : codes.length >= 2 ? 'list' : 'all';
+  }
+
+  // 全現場の選択で、部署で絞り・コードで探す(部分一致・大文字小文字を区別しない)
+  function filterSites(config, dept, query) {
+    var q = String(query || '').trim().toLowerCase();
+    return config.sites.filter(function (s) {
+      return (!dept || s.dept === dept) && (!q || s.code.toLowerCase().indexOf(q) !== -1);
+    });
+  }
+
+  // 部署コードの一覧(sites の並び順・重複なし)
+  function deptsOf(config) {
+    var out = [];
+    config.sites.forEach(function (s) {
+      if (out.indexOf(s.dept) === -1) out.push(s.dept);
+    });
+    return out;
+  }
+
+  // 「自分が実施」の実施者(会社 = 自社・立場 = その他 + 氏名)。送る中身の形は変えない
+  function selfMembers(config, name) {
+    return [{ company: config.ownCompany, role: config.otherRole, name: String(name || '') }];
+  }
+
   // 選ばれた実施者をその現場の一覧の並び順にそろえ、重複(同じ会社)と一覧外を落とす
   // member = { company, role, name }(name は立場が「その他」のときだけ使う)
   function normalizeMembers(config, siteCode, list) {
@@ -111,6 +176,11 @@
     var errors = [];
     var s = state || {};
 
+    // 社員用リンク・全現場の入口では、最初に 2 択を選ぶ(仕様 D52)
+    if (s.whoRequired && !s.who) {
+      errors.push({ field: 'who', message: '「協力会社の紙を代わりに送る」か「自分が実施」を選んでください' });
+    }
+
     if (!s.date) {
       errors.push({ field: 'date', message: '実施日を選んでください' });
     } else if (!isRealDate(s.date)) {
@@ -133,7 +203,13 @@
     }
 
     var members = normalizeMembers(config, s.site, s.members);
-    if (members.length === 0) {
+    // 「自分が実施」は会社が自社に決まっているので、会社の選択を求めない(現場の未選択は上で出る)。
+    // 現場を選んだ後は、実施者が自社の 1 行であることを確かめる(security-R2-005)
+    if (s.who === 'self') {
+      if (s.site && site && (members.length !== 1 || members[0].company !== config.ownCompany)) {
+        errors.push({ field: 'companies', message: 'この現場の一覧に自社がありません。担当に連絡してください' });
+      }
+    } else if (members.length === 0) {
       errors.push({ field: 'companies', message: '実施した会社を 1 社以上選んでください' });
     } else if (members.length > MAX_COMPANIES) {
       errors.push({ field: 'companies', message: '会社は ' + MAX_COMPANIES + ' 社までにしてください' });
@@ -231,6 +307,12 @@
     return Math.min(360000, 60000 + Math.ceil(chars / 16));
   }
 
+  // 会社名として使えない文字か。; = 改行は本文の区切り、先頭の = + - @ は表計算で式と読まれるため使えない。
+  // 前後の空白も不可(受け側は空白を取ってマスタと照らすため、食い違いの元になる)。長さは受付と同じ 60 文字まで
+  function badCompanyText(c) {
+    return typeof c !== 'string' || !c || c.length > 60 || /[;|=]/.test(c) || BAD_CHAR_RE.test(c) || looksLikeLink(c) || /^[=+\-@]/.test(nfkc(c)) || c !== c.trim();
+  }
+
   // 設定そのものの誤り(差し替え時の書き損じ)を画面に出す前に見つける
   function checkConfig(config) {
     var problems = [];
@@ -240,11 +322,10 @@
     (config.sites || []).forEach(function (s) {
       if (!CODE_RE.test(s.code || '') || !CODE_RE.test(s.dept || '')) problems.push('sites:' + s.code);
     });
+    // 自社の文字(「自分が実施」の会社)は会社名と同じ決まり(仕様 D52)
+    if (badCompanyText(config.ownCompany)) problems.push('ownCompany');
     (config.roster || []).forEach(function (r, i) {
-      var c = r.company;
-      // ; = 改行は本文の区切り、先頭の = + - @ は表計算で式と読まれるため使えない
-      // 前後の空白も不可(受け側は空白を取ってマスタと照らすため、食い違いの元になる)。長さは受付と同じ 60 文字まで
-      if (typeof c !== 'string' || !c || c.length > 60 || /[;|=]/.test(c) || BAD_CHAR_RE.test(c) || looksLikeLink(c) || /^[=+\-@]/.test(nfkc(c)) || c !== c.trim()) problems.push('roster[' + i + '].company');
+      if (badCompanyText(r.company)) problems.push('roster[' + i + '].company');
       if (!findSite(config, r.site)) problems.push('roster[' + i + '].site');
       // 公開してよいのは現場コードと会社名だけ(ほかの項目が紛れ込んだら止める)
       if (Object.keys(r).some(function (k) { return k !== 'site' && k !== 'company'; })) problems.push('roster[' + i + '].keys');
@@ -252,9 +333,10 @@
     if (!(config.roster || []).length) problems.push('roster');
     // 立場は本文の書式(版)の一部。受け側の流れと同じ 3 つ・同じ順でなければ止める(変えるときは版を上げる)
     if (JSON.stringify(config.roles) !== JSON.stringify(ROLES_V2) || config.otherRole !== ROLES_V2[2]) problems.push('roles');
-    // どの現場にも会社が 1 社以上あること(無いと選べずに止まる)
+    // どの現場にも、選べる会社が 1 社以上あること(無いと選べずに止まる)と、自社の行があること(仕様 D52)
     (config.sites || []).forEach(function (s) {
-      if (!companiesForSite(config, s.code).length) problems.push('roster:' + s.code);
+      if (!visibleCompanies(config, s.code).length) problems.push('roster:' + s.code);
+      if (companiesForSite(config, s.code).indexOf(config.ownCompany) === -1) problems.push('roster-own:' + s.code);
     });
     return problems;
   }
@@ -264,6 +346,12 @@
     isRealDate: isRealDate,
     findSite: findSite,
     companiesForSite: companiesForSite,
+    visibleCompanies: visibleCompanies,
+    parseSiteParam: parseSiteParam,
+    entryMode: entryMode,
+    filterSites: filterSites,
+    deptsOf: deptsOf,
+    selfMembers: selfMembers,
     normalizeMembers: normalizeMembers,
     isValidName: isValidName,
     validate: validate,
@@ -288,7 +376,12 @@
   config.roster = root.PATROL_ROSTER || [];
   var O = root.PatrolOutbox;
 
-  var state = { date: '', dept: '', site: '', members: [], photoCount: 0 };
+  // who = 'partner'(協力会社が自分の紙を送る・現場 QR の既定)/ 'paper'(社員が協力会社の紙を代わりに送る)/ 'self'(社員が自分で実施した分)
+  var state = { date: '', dept: '', site: '', members: [], photoCount: 0, who: '', whoRequired: false };
+  var selfName = '';   // 「自分が実施」の氏名(続けて入れるときも残す)
+  // 開いたときの入口(URL の s から決める。仕様 D48)
+  var entry = { mode: 'all', codes: [], unknown: 0, shown: [] };
+  var rechooseFrom = null; // 選び直しの確かめを開いたボタン(「やめる」でフォーカスを戻す)
   var photos = [];     // { file, url }
   var meta = null;     // 確認画面に入った時点で作る { ref, created }
   var ready = null;    // 送る形にした写真 [{ type, data }](確認画面で用意する)
@@ -339,32 +432,147 @@
     $('site-fixed-dept').textContent = site ? site.dept : '';
   }
 
-  function renderSiteChoice() {
+  // 選択肢を作り直す。いま選んでいる現場が選択肢から外れたら、未選択に戻す
+  function fillSiteOptions(list) {
     var sel = $('site-select');
+    sel.textContent = '';
     sel.appendChild(el('option', { value: '' }, '選んでください'));
-    config.sites.forEach(function (s) {
+    list.forEach(function (s) {
       sel.appendChild(el('option', { value: s.code }, s.code + '(部署 ' + s.dept + ')'));
     });
+    var still = list.some(function (s) { return s.code === state.site; });
+    if (!still && state.site) setSite('');
+    sel.value = state.site;
+  }
+
+  function sitesOfCodes(codes) {
+    return codes.map(function (c) { return findSite(config, c); });
+  }
+
+  // 現場の選び方を切り替える: 'fixed'(URL の 1 現場)/ 'list'(リンクの現場だけ)/ 'all'(全現場・部署で絞る・コードで探す)
+  function showChooser(kind) {
+    $('site-confirm').hidden = true;
+    $('site-fixed').hidden = kind !== 'fixed';
+    $('site-choose').hidden = kind === 'fixed';
+    $('site-filter').hidden = kind !== 'all';
+    $('site-outside').hidden = kind !== 'list';
+    $('site-list-hint').hidden = kind !== 'list';
+    if (kind === 'fixed') {
+      setSite(entry.codes[0]);
+    } else if (kind === 'list') {
+      $('site-list-hint').textContent = 'リンクの現場(' + entry.codes.length + ' 件)から選んでください。';
+      fillSiteOptions(sitesOfCodes(entry.codes));
+    } else {
+      $('site-dept').value = '';
+      $('site-search').value = '';
+      fillSiteOptions(config.sites);
+    }
+    renderWho();
+  }
+
+  // 「違う現場を選ぶ」「一覧の外の現場を選ぶ」は、押した後に確かめる(仕様 D50)
+  function askRechoose(e) {
+    rechooseFrom = e && e.currentTarget ? e.currentTarget.id : null;
+    $('site-confirm').hidden = false;
+    $('site-confirm-yes').focus();
+  }
+
+  function renderSiteNotice() {
+    var box = $('site-notice');
+    if (!entry.unknown) {
+      box.hidden = true;
+      return;
+    }
+    // 決まった文と件数。URL の文字はコードの形のものだけを出す(仕様 D49)
+    box.hidden = false;
+    var rest = entry.unknown - entry.shown.length;
+    box.textContent = 'リンクの中に、この一覧に無い現場コードが ' + entry.unknown + ' 件ありました。配られた紙の現場コードを確かめてください。' +
+      (entry.shown.length ? '(' + entry.shown.join('、') + (rest > 0 ? ' ほか ' + rest + ' 件' : '') + ')' : '');
+  }
+
+  function renderSiteChoice() {
+    var sel = $('site-select');
     sel.addEventListener('change', function () {
       setSite(sel.value);
       renderCompanies();
       refresh();
     });
-
-    var param = new URLSearchParams(root.location.search).get('s');
-    if (param && findSite(config, param)) {
-      setSite(param);
-      sel.value = param;
-      $('site-fixed').hidden = false;
-      $('site-choose').hidden = true;
-    } else {
-      $('site-fixed').hidden = true;
-      $('site-choose').hidden = false;
+    $('site-dept').appendChild(el('option', { value: '' }, 'すべての部署'));
+    deptsOf(config).forEach(function (d) {
+      $('site-dept').appendChild(el('option', { value: d }, '部署 ' + d));
+    });
+    function applyFilter() {
+      fillSiteOptions(filterSites(config, $('site-dept').value, $('site-search').value));
+      renderCompanies();
+      refresh();
     }
-    $('site-change').addEventListener('click', function () {
-      $('site-fixed').hidden = true;
-      $('site-choose').hidden = false;
-      sel.focus();
+    $('site-dept').addEventListener('change', applyFilter);
+    $('site-search').addEventListener('input', applyFilter);
+    $('site-change').addEventListener('click', askRechoose);
+    $('site-outside').addEventListener('click', askRechoose);
+    $('site-confirm-yes').addEventListener('click', function () {
+      setSite(''); // 選び直すときは、前の現場を残さない
+      showChooser('all');
+      renderCompanies();
+      refresh();
+      $('site-select').focus();
+    });
+    $('site-confirm-no').addEventListener('click', function () {
+      $('site-confirm').hidden = true;
+      if (rechooseFrom) refocus(rechooseFrom);
+    });
+
+    // ページが読む URL のパラメータは s だけ(仕様 D48)
+    var parsed = parseSiteParam(config, new URLSearchParams(root.location.search).get('s'));
+    entry = { mode: entryMode(parsed.codes), codes: parsed.codes, unknown: parsed.unknown, shown: parsed.shown };
+    // 一覧にあるコードが 0 で、一覧に無いコードがある(古い現場 QR・打ち間違い)ときは、協力会社の画面のまま全現場から選ぶ。
+    // 社員はそこから「自分が実施」のボタンで入れる(仕様 D49。engineer-R1-005)
+    var partnerAll = entry.mode === 'all' && entry.unknown > 0;
+    state.whoRequired = entry.mode !== 'single' && !partnerAll;
+    state.who = state.whoRequired ? '' : 'partner';
+    renderSiteNotice();
+    showChooser(entry.mode === 'single' ? 'fixed' : entry.mode);
+  }
+
+  // 2 択(社員用リンク・全現場)と、現場 QR から「自分が実施」へ入る小さなボタン(仕様 D52・D53)
+  function renderWho() {
+    var choosing = state.whoRequired && !state.who;
+    $('who').hidden = !choosing;
+    $('who-chosen').hidden = !(state.who === 'paper' || state.who === 'self');
+    $('who-chosen-text').textContent = state.who === 'self' ? '自分が実施した分を送ります' : state.who === 'paper' ? '協力会社の紙を代わりに送ります' : '';
+    $('input-body').hidden = choosing;
+    // 現場 QR(と協力会社の画面の全現場)から社員が入る小さなボタン 2 つ(engineer-R2-004)
+    $('staff-entry').hidden = !(!state.whoRequired && state.who === 'partner');
+    $('note-partner').hidden = state.who !== 'partner';
+    $('note-staff').hidden = state.who !== 'paper';
+    $('companies-box').hidden = state.who === 'self';
+    $('self-box').hidden = state.who !== 'self';
+    $('self-company').textContent = config.ownCompany;
+  }
+
+  function setWho(who) {
+    state.who = who;
+    state.members = who === 'self' ? selfMembers(config, selfName) : [];
+    renderWho();
+    renderCompanies();
+    refresh();
+  }
+
+  function initWho() {
+    // 押したボタンが隠れるときは、次に操作する欄へフォーカスを移す(engineer-R1-006)
+    $('who-paper').addEventListener('click', function () { setWho('paper'); refocus('date'); });
+    $('who-self').addEventListener('click', function () { setWho('self'); refocus('self-name'); });
+    $('self-entry').addEventListener('click', function () { setWho('self'); refocus('self-name'); });
+    $('paper-entry').addEventListener('click', function () { setWho('paper'); refocus('date'); });
+    // 選び直す: 社員用リンク・全現場では 2 択に戻る。現場 QR(と協力会社の画面の全現場)では協力会社の画面に戻る
+    $('who-change').addEventListener('click', function () {
+      setWho(state.whoRequired ? '' : 'partner');
+      refocus(state.whoRequired ? 'who-paper' : 'paper-entry');
+    });
+    $('self-name').addEventListener('input', function () {
+      selfName = $('self-name').value;
+      if (state.who === 'self') state.members = selfMembers(config, selfName);
+      refresh();
     });
   }
 
@@ -385,10 +593,14 @@
   // 会社を選ぶと、その会社で実施した人の立場を選ぶ欄が開く(「その他」のときだけ氏名の欄)
   function renderCompanies() {
     var box = $('company-list');
-    state.members = normalizeMembers(config, state.site, state.members);
     box.textContent = '';
+    if (state.who === 'self') {
+      state.members = selfMembers(config, selfName);
+      return;
+    }
+    state.members = normalizeMembers(config, state.site, state.members).filter(function (m) { return m.company !== config.ownCompany; });
     $('company-empty').hidden = !!state.site;
-    companiesForSite(config, state.site).forEach(function (c, i) {
+    visibleCompanies(config, state.site).forEach(function (c, i) {
       var member = findMember(c);
       var wrap = el('div', { 'class': 'member' });
       var id = 'company-' + i;
@@ -484,6 +696,8 @@
   }
 
   function renderConfirm() {
+    // 現場コードを大きく出す(取り違えの対策・仕様 D51)
+    $('c-site-big').textContent = state.site;
     $('c-date').textContent = state.date;
     $('c-dept').textContent = state.dept;
     $('c-site').textContent = state.site;
@@ -627,6 +841,8 @@
     bar.hidden = msgs.length === 0;
     bar.textContent = msgs.join(' ');
     bar.className = 'outbox-bar' + (st.blocked || st.unsaved ? ' bad' : '');
+    // 送れていない記録がある間は、プライベートブラウズの注意を常に出す(仕様 D54)
+    $('private-warning').hidden = !(st.pending || st.blocked);
 
     var list = outbox.list();
     $('outbox').hidden = list.length === 0;
@@ -847,7 +1063,14 @@
     meta = null;
     currentRef = null;
     state.date = '';
-    state.members = [];
+    state.members = state.who === 'self' ? selfMembers(config, selfName) : [];
+    // 現場を残すのは現場 QR で開いたときだけ(URL の現場に戻す)。社員用リンク・全現場では未選択に戻す(仕様 D51)
+    if (entry.mode === 'single') {
+      showChooser('fixed');
+    } else {
+      setSite('');
+      showChooser(entry.mode);
+    }
     $('date').value = '';
     $('date').max = todayLocal(); // 日付が変わっていたら、今日を選べるように
     $('prep-error').hidden = true;
@@ -885,6 +1108,7 @@
       });
     });
 
+    initWho();
     renderSiteChoice();
     renderCompanies();
 

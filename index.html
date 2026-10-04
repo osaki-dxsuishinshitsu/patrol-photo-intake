@@ -18,6 +18,7 @@
   <main>
     <p id="config-error" class="error" role="alert" hidden></p>
     <p id="outbox-bar" class="outbox-bar" role="status" aria-live="polite" hidden></p>
+    <p id="private-warning" class="error" role="status" hidden>プライベートブラウズ(シークレット)で開いているときは、このページを閉じると送れていない記録が消えます。普通の画面で開いてください。</p>
     <p id="inapp-warning" class="error" role="alert" hidden>LINE などのアプリの中で開いています。送れなかったものが残らないことがあるので、右上のメニューから「ブラウザで開く」(Safari / Chrome)を選んで開き直してください。</p>
     <p id="storage-warning" class="error" role="alert" hidden>この端末(このブラウザの設定)では、送れなかったものを残せません。送信の後、受付番号が出るまでページを閉じないでください。プライベートブラウズを使っているときは、通常の画面で開き直してください。</p>
 
@@ -25,6 +26,22 @@
     <section id="step-input" aria-labelledby="h-input">
       <h2 id="h-input">1. 内容を入れる</h2>
 
+      <p id="site-notice" class="error" role="status" hidden></p>
+
+      <!-- 社員用リンク・全現場の入口では、最初に 2 択(仕様 D52) -->
+      <fieldset id="who" class="field who" hidden>
+        <legend>何を送りますか</legend>
+        <div class="buttons">
+          <button type="button" id="who-paper">協力会社の紙を代わりに送る</button>
+          <button type="button" id="who-self">自分が実施</button>
+        </div>
+      </fieldset>
+      <div id="who-chosen" class="field" hidden>
+        <p class="fixed"><strong id="who-chosen-text"></strong></p>
+        <button type="button" id="who-change" class="link">選び直す</button>
+      </div>
+
+      <div id="input-body">
       <div class="field">
         <label for="date">実施日</label>
         <input type="date" id="date" name="date" required>
@@ -38,17 +55,51 @@
           <button type="button" id="site-change" class="link">違う現場を選ぶ</button>
         </div>
         <div id="site-choose" hidden>
+          <div id="site-filter" class="filter" hidden>
+            <label for="site-dept">部署で絞る</label>
+            <select id="site-dept"></select>
+            <label for="site-search">コードで探す</label>
+            <input type="search" id="site-search" autocomplete="off" autocapitalize="off" spellcheck="false">
+          </div>
+          <p id="site-list-hint" class="hint" hidden></p>
           <select id="site-select" aria-labelledby="l-site"></select>
           <p class="hint">配られた説明の紙にある現場のコードを選んでください。</p>
+          <button type="button" id="site-outside" class="link" hidden>一覧の外の現場を選ぶ</button>
+        </div>
+        <!-- 選び直しの確かめ(仕様 D50) -->
+        <div id="site-confirm" class="confirm-box" role="group" aria-labelledby="site-confirm-text" hidden>
+          <p id="site-confirm-text">紙に書かれた現場コードと、この画面のコードが違うときだけ、選び直してください。</p>
+          <div class="buttons">
+            <button type="button" id="site-confirm-yes">選び直す</button>
+            <button type="button" id="site-confirm-no">やめる</button>
+          </div>
         </div>
       </div>
 
-      <fieldset class="field">
+      <fieldset id="companies-box" class="field">
         <legend>実施した会社(複数選べます)</legend>
         <p class="hint">会社を選ぶと、その会社で実施した人の立場を選ぶ欄が出ます。「その他」のときだけ氏名を入れてください。</p>
         <p id="company-empty" class="hint" hidden>先に現場を選ぶと、その現場の会社が出ます。</p>
         <div id="company-list"></div>
       </fieldset>
+
+      <!-- 自分が実施(会社 = 自社・立場 = その他 + 氏名。仕様 D52) -->
+      <div id="self-box" class="field" hidden>
+        <p class="fixed">会社 <strong id="self-company"></strong>・立場 その他</p>
+        <label for="self-name" class="name-label">氏名</label>
+        <input type="text" id="self-name" maxlength="30" autocomplete="name">
+        <p class="hint">氏名はパトロールの実施記録として社内でだけ使います。送り終えるまではこの端末に残り、送り終えたら消えます。</p>
+      </div>
+
+      <!-- 二重送信の注意(仕様 D53) -->
+      <p id="note-partner" class="hint note" hidden>この紙を社員に渡して送ってもらう場合は、ここからは送らないでください(同じ紙はどちらか一方だけが送ります)。</p>
+      <p id="note-staff" class="hint note" hidden>協力会社が自分で送った紙は、ここから送らないでください(同じ紙はどちらか一方だけが送ります)。</p>
+      <!-- 現場 QR から社員が入る道(仕様 D52。engineer-R2-004) -->
+      <div id="staff-entry" class="field" hidden>
+        <p class="hint">社員の方:</p>
+        <button type="button" id="paper-entry" class="link">協力会社の紙を代わりに送るとき</button>
+        <button type="button" id="self-entry" class="link">自分が実施した分を送るとき</button>
+      </div>
 
       <div class="field">
         <label for="photos">チェックシートの写真(1〜10 枚)</label>
@@ -65,11 +116,13 @@
       </div>
 
       <button type="button" id="to-confirm" class="primary" disabled>確認へ</button>
+      </div>
     </section>
 
     <!-- 2. 確認して送信 -->
     <section id="step-confirm" aria-labelledby="h-confirm" hidden>
       <h2 id="h-confirm">2. 内容を確かめて送信</h2>
+      <p class="site-big">現場 <span id="c-site-big"></span></p>
       <dl class="summary">
         <dt>実施日</dt><dd id="c-date"></dd>
         <dt>部署</dt><dd id="c-dept"></dd>

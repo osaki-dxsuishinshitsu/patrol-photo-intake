@@ -117,3 +117,15 @@ h3 { font-size: 1rem; margin: 24px 0 6px; }
 .rec p { margin: 2px 0; }
 .rec-head { font-weight: 700; }
 .rec-blocked { border-color: var(--error); }
+/* 便 1(仕様 D48〜D53): 2 択・部署で絞る・選び直しの確かめ・大きな現場コード・注意の 1 行 */
+/* hidden 属性は display の指定より強くする(.filter などの display で隠した欄が出ないように) */
+[hidden] { display: none !important; }
+.who .buttons { margin-top: 4px; }
+.filter { display: grid; gap: 4px; margin-bottom: 10px; }
+.filter label { font-weight: 700; margin-top: 4px; }
+.filter input[type=search] { font-size: 17px; min-height: 48px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--fg); }
+.confirm-box { background: var(--panel); border-left: 4px solid var(--error); padding: 8px 12px; margin-top: 10px; }
+.confirm-box p { margin: 0; font-weight: 700; }
+.site-big { font-size: 1.6rem; font-weight: 700; margin: 4px 0 12px; overflow-wrap: anywhere; }
+.note { border-left: 4px solid var(--border); padding-left: 8px; }
+#self-box input[type=text] { font-size: 17px; width: 100%; min-height: 48px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--fg); }
