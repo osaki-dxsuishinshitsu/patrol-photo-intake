@@ -30,6 +30,12 @@
   }
   // ページと受付との取り決めの版(受付の PROTOCOL と同じ)
   var PROTOCOL = 1;
+  // このページが作る本文の書式の版(写真ごとのコメント = v3。仕様 D63)。書式を作るこのコードが版を持つ。
+  // config.js の formVersion(2)は変えない: Pages のキャッシュで古い app.js が新しい config.js を読んでも、
+  // 古い app.js はコメントの無い v2 を送り続けられるように(仕様 D64)
+  var FORM_VERSION = 3;
+  // 写真ごとのコメントの長さの上限(前後の空白を除いたコードポイントの数。受付と同じ。仕様 D61)
+  var MAX_COMMENT = 100;
   // 1 通で選べる会社の上限(受付・受け側の流れと同じ)
   var MAX_COMPANIES = 20;
   // 立場が「その他」のときに入れる氏名の長さの上限
@@ -168,8 +174,39 @@
       !/[;|=\/]/.test(n) && !BAD_CHAR_RE.test(n) && !looksLikeLink(n) && !HOST_RE.test(nfkc(n)) && !/^[=+\-@]/.test(nfkc(n));
   }
 
+  // 写真ごとのコメント: 前後の空白(全角を含む)を除いた形(送る値)
+  function cleanComment(c) {
+    return typeof c === 'string' ? c.trim() : '';
+  }
+
+  // 写真ごとのコメントの使えない書き方(仕様 D62。受付の isSafeComment_ と同じ決まり)。
+  // 戻り値 = null(使える・空を含む)/ 'length' / 'char' / 'head' / 'link'。
+  // 広いドメインの形(HOST_RE)は句点(。)をそろえずに見る(「3F。NG」を拒まないため)。一覧の形(LINK_RE)は句点をそろえた形でも見る
+  var COMMENT_SCHEME_RE = /\b(file|smb|search|search-ms|ms-[a-z-]+|mailto|news|nntp|telnet|outlook|onenote|notes|shell|callto|tel|sip|ldap):/i;
+  function commentProblem(c) {
+    var v = cleanComment(c);
+    if (v === '') return null;
+    var n = v.normalize ? v.normalize('NFKC') : v;
+    if (Array.from(v).length > MAX_COMMENT) return 'length';
+    if (BAD_CHAR_RE.test(v) || /\p{Cs}/u.test(v) || /[;|=]/.test(v) || /[;|=]/.test(n) || v.indexOf('---') !== -1 || n.indexOf('---') !== -1) return 'char';
+    if (/^[=+\-@]/.test(n)) return 'head';
+    if (/\\/.test(n) || LINK_RE.test(n) || looksLikeLink(v) || HOST_RE.test(n) || COMMENT_SCHEME_RE.test(n)) return 'link';
+    return null;
+  }
+
+  // 画面に出す理由(仕様の「画面の文言」)。i は 0 から
+  function commentMessage(i, c) {
+    var k = commentProblem(c);
+    var head = '写真 ' + (i + 1) + ' のコメント';
+    if (k === 'length') return head + 'は ' + MAX_COMMENT + ' 字までにしてください(いま ' + Array.from(cleanComment(c)).length + ' 字)';
+    if (k === 'char') return head + 'に、使えない字があります(; | = 、--- 、改行、見えない字)';
+    if (k === 'head') return head + 'の先頭に = + - @ は使えません';
+    if (k === 'link') return head + 'に、URL・メールアドレス・ドメインの形と \\ は書けません';
+    return null;
+  }
+
   /*
-   * state = { date, dept, site, members: [{ company, role, name }], photoCount }
+   * state = { date, dept, site, members: [{ company, role, name }], photoCount, photoComments: [文字列…] }
    * 戻り値 = 欠けている・誤っている項目の一覧。空なら確認へ進める。
    */
   function validate(state, config, now) {
@@ -229,6 +266,10 @@
     } else if (s.photoCount > MAX_PHOTOS) {
       errors.push({ field: 'photos', message: '写真は ' + MAX_PHOTOS + ' 枚までにしてください' });
     }
+    (s.photoComments || []).forEach(function (c, i) {
+      var m = commentMessage(i, c);
+      if (m) errors.push({ field: 'comments', message: m });
+    });
 
     return errors;
   }
@@ -282,12 +323,14 @@
     return null;
   }
 
-  // 受付へ送る中身(仕様 D21 の JSON)。件名・本文・宛先は受付が決める
+  // 受付へ送る中身(仕様 D21 の JSON。v3 で comments を足した。仕様 D63)。件名・本文・宛先は受付が決める。
+  // comments は写真の順に、写真と同じ数(空のコメントは空の文字列)
   function buildPayload(state, config, meta, photos, device) {
+    var comments = state.photoComments || [];
     return {
       p: PROTOCOL,
       formId: config.formId,
-      formVersion: config.formVersion,
+      formVersion: FORM_VERSION,
       ref: meta.ref,
       date: state.date,
       dept: state.dept,
@@ -297,7 +340,8 @@
       }),
       created: meta.created,
       device: device,
-      photos: photos.map(function (p) { return { type: p.type, data: p.data }; })
+      photos: photos.map(function (p) { return { type: p.type, data: p.data }; }),
+      comments: photos.map(function (p, i) { return cleanComment(comments[i]); })
     };
   }
 
@@ -354,6 +398,11 @@
     selfMembers: selfMembers,
     normalizeMembers: normalizeMembers,
     isValidName: isValidName,
+    cleanComment: cleanComment,
+    commentProblem: commentProblem,
+    commentMessage: commentMessage,
+    FORM_VERSION: FORM_VERSION,
+    MAX_COMMENT: MAX_COMMENT,
     validate: validate,
     isoWithOffset: isoWithOffset,
     newRef: newRef,
@@ -377,12 +426,12 @@
   var O = root.PatrolOutbox;
 
   // who = 'partner'(協力会社が自分の紙を送る・現場 QR の既定)/ 'paper'(社員が協力会社の紙を代わりに送る)/ 'self'(社員が自分で実施した分)
-  var state = { date: '', dept: '', site: '', members: [], photoCount: 0, who: '', whoRequired: false };
+  var state = { date: '', dept: '', site: '', members: [], photoCount: 0, photoComments: [], who: '', whoRequired: false };
   var selfName = '';   // 「自分が実施」の氏名(続けて入れるときも残す)
   // 開いたときの入口(URL の s から決める。仕様 D48)
   var entry = { mode: 'all', codes: [], unknown: 0, shown: [] };
   var rechooseFrom = null; // 選び直しの確かめを開いたボタン(「やめる」でフォーカスを戻す)
-  var photos = [];     // { file, url }
+  var photos = [];     // { file, url, comment }
   var meta = null;     // 確認画面に入った時点で作る { ref, created }
   var ready = null;    // 送る形にした写真 [{ type, data }](確認画面で用意する)
   var prepToken = 0;   // 古い準備の結果を捨てるための番号
@@ -663,6 +712,28 @@
     photos.forEach(function (p, i) {
       var li = el('li', { 'class': 'photo' });
       li.appendChild(el('img', { src: p.url, alt: 'チェックシートの写真 ' + (i + 1) }));
+      // 写真ごとのコメント(任意・1 行。仕様 D61)。入力のたびに確かめ、理由を欄の下に出す
+      var id = 'photo-comment-' + i;
+      li.appendChild(el('label', { 'for': id, 'class': 'comment-label' }, '写真 ' + (i + 1) + ' のコメント(任意・' + MAX_COMMENT + ' 字まで)'));
+      var input = el('input', { type: 'text', id: id, 'class': 'photo-comment', autocomplete: 'off', 'aria-describedby': id + '-error' });
+      input.value = p.comment || '';
+      var err = el('p', { id: id + '-error', 'class': 'error comment-error', role: 'alert' });
+      // 理由が変わったときだけ書き換える(打つたびに同じ理由が読み上げられないように。review engineer の所見)
+      var showErr = function () {
+        var m = commentMessage(i, p.comment) || '';
+        if (err.textContent !== m) err.textContent = m;
+        err.hidden = !m;
+        input.setAttribute('aria-invalid', m ? 'true' : 'false');
+      };
+      input.addEventListener('input', function () {
+        p.comment = input.value;
+        state.photoComments = photos.map(function (q) { return q.comment || ''; });
+        showErr();
+        refresh();
+      });
+      li.appendChild(input);
+      li.appendChild(err);
+      showErr();
       var rm = el('button', { type: 'button', 'class': 'link' }, 'この写真を外す');
       rm.addEventListener('click', function () {
         root.URL.revokeObjectURL(p.url);
@@ -674,6 +745,7 @@
       list.appendChild(li);
     });
     state.photoCount = photos.length;
+    state.photoComments = photos.map(function (q) { return q.comment || ''; });
     $('photo-count').textContent = photos.length ? '選んだ写真: ' + photos.length + ' 枚' : 'まだ選んでいません';
   }
 
@@ -708,6 +780,9 @@
     photos.forEach(function (p, i) {
       var li = el('li', { 'class': 'photo' });
       li.appendChild(el('img', { src: p.url, alt: 'チェックシートの写真 ' + (i + 1) }));
+      // 写真とコメントの組(仕様 D61)。送る値と同じく前後の空白を除いて出す
+      var c = cleanComment(p.comment);
+      li.appendChild(el('p', { 'class': c ? 'photo-comment-text' : 'photo-comment-text none' }, c || '(コメントなし)'));
       list.appendChild(li);
     });
   }
@@ -1119,7 +1194,7 @@
         if (f.type && f.type.indexOf('image/') !== 0) return;
         // 上限を超えた分は読み込まない(大量の写真で画面が重くならないように)
         if (photos.length >= MAX_PHOTOS) { over++; return; }
-        photos.push({ file: f, url: root.URL.createObjectURL(f) });
+        photos.push({ file: f, url: root.URL.createObjectURL(f), comment: '' });
       });
       photoInput.value = '';
       $('photo-over').hidden = over === 0;
