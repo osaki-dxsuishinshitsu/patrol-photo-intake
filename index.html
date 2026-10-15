@@ -88,7 +88,7 @@
         <p class="fixed">会社 <strong id="self-company"></strong>・立場 その他</p>
         <label for="self-name" class="name-label">氏名</label>
         <input type="text" id="self-name" maxlength="30" autocomplete="name">
-        <p class="hint">氏名はパトロールの実施記録として社内でだけ使います。送り終えるまではこの端末に残り、送り終えたら消えます。</p>
+        <p class="hint">氏名はパトロールの実施記録として社内でだけ使います。送り終えるまではこの端末に残り、送り終えたら消えます(「送れません」となった記録は、下の「送信の記録」から消すまで残ります)。</p>
       </div>
 
       <!-- 二重送信の注意(仕様 D53) -->
@@ -107,6 +107,7 @@
         <p class="hint">紙全体を明るい所で、文字が読めるように撮ってください。電波が無い所でも、入力と写真の選択まではできます。</p>
         <p id="photo-count" class="count"></p>
         <p id="photo-over" class="error" role="status" hidden></p>
+        <p id="pick-reset" class="hint" role="status"></p>
         <ul id="photo-list" class="photos"></ul>
       </div>
 
@@ -160,6 +161,7 @@
   </main>
 
   <script src="roster.js"></script>
+  <script src="targets.js"></script>
   <script src="config.js"></script>
   <script src="outbox.js"></script>
   <script src="app.js"></script>

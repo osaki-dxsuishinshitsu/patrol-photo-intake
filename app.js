@@ -90,6 +90,17 @@
     return companiesForSite(config, siteCode).filter(function (c) { return c !== config.ownCompany; });
   }
 
+  // 協力会社の紙で選べる現場か(自社以外の会社が 1 社以上ある現場。仕様 D71)
+  function hasPartners(config, siteCode) {
+    return visibleCompanies(config, siteCode).length > 0;
+  }
+
+  // 入口で選べる現場がすべて協力会社 0 社か(そうなら「自分が実施」で始める。仕様 D71)。
+  // codes = 入口で選べる現場のコード(現場 QR = その 1 つ・社員用リンク = 並んだコード・全現場 = 全部)
+  function selfOnlyEntry(config, codes) {
+    return codes.length > 0 && codes.every(function (c) { return !hasPartners(config, c); });
+  }
+
   // URL の s で読む要素の数の上限と、画面に出す一覧に無いコードの数の上限(仕様 D49)
   var MAX_PARAM_ITEMS = 50;
   var MAX_SHOWN_UNKNOWN = 3;
@@ -179,6 +190,42 @@
     return typeof c === 'string' ? c.trim() : '';
   }
 
+  // 写真ごとの会社の印(仕様 D77): 全角の角括弧で会社名を囲む。受け側はコメントが「［会社名］」で始まる写真を数える
+  var PICK_OPEN = '［';  // ［
+  var PICK_CLOSE = '］'; // ］
+  function pickMarker(company) {
+    return PICK_OPEN + company + PICK_CLOSE;
+  }
+
+  // 送るコメント = 選んだ会社があれば「［会社名］ 自由記入」(自由記入が空なら印だけ)、無ければ自由記入だけ。
+  // 印は欄に書き込まず、送るときにここで付ける(手で崩せない形にする。仕様 D78)
+  function composeComment(pick, text) {
+    var c = cleanComment(text);
+    if (!pick) return c;
+    return c ? pickMarker(pick) + ' ' + c : pickMarker(pick);
+  }
+
+  // 自由記入の先頭に ［ や [ を書かせない(会社の印と見分けがつかなくなるため。仕様 D78・review security-R1-001)
+  function freeTextProblem(text) {
+    var v = cleanComment(text);
+    return v !== '' && nfkc(v).charAt(0) === '[';
+  }
+
+  // 会社名に使えない括弧(印の鍵が別の会社の頭にならないように。仕様 D79・review security-R1-002)
+  function bracketInName(c) {
+    return /[\[\]［］]/.test(nfkc(c));
+  }
+
+  // その写真で選べる会社 = 自社の文字(先頭)+ その現場の一覧の会社(一覧の並び)。
+  // その現場の一覧が無いときは空(選ぶ欄を出さない。仕様 D79)
+  function targetsForSite(config, siteCode) {
+    var out = [];
+    (config.targets || []).forEach(function (t) {
+      if (t.site === siteCode && t.company !== config.ownCompany && out.indexOf(t.company) === -1) out.push(t.company);
+    });
+    return out.length ? [config.ownCompany].concat(out) : [];
+  }
+
   // 写真ごとのコメントの使えない書き方(仕様 D62。受付の isSafeComment_ と同じ決まり)。
   // 戻り値 = null(使える・空を含む)/ 'length' / 'char' / 'head' / 'link'。
   // 広いドメインの形(HOST_RE)は句点(。)をそろえずに見る(「3F。NG」を拒まないため)。一覧の形(LINK_RE)は句点をそろえた形でも見る
@@ -205,8 +252,18 @@
     return null;
   }
 
+  // 写真ごとの理由(選んだ会社と自由記入から。仕様 D78)。会社を選んだときの長さの理由は「会社名を含めて」と出す(review ux-R1-004)
+  function photoCommentMessage(i, pick, text) {
+    var head = '写真 ' + (i + 1) + ' のコメント';
+    if (freeTextProblem(text)) return head + 'の先頭に ［ や [ は使えません(会社の印に使うため)。【 】や( )なら使えます';
+    var c = composeComment(pick, text);
+    if (pick && commentProblem(c) === 'length') return head + 'は、会社名とその括弧を含めて ' + MAX_COMMENT + ' 字までにしてください(いま ' + Array.from(c).length + ' 字)';
+    return commentMessage(i, c);
+  }
+
   /*
-   * state = { date, dept, site, members: [{ company, role, name }], photoCount, photoComments: [文字列…] }
+   * state = { date, dept, site, members: [{ company, role, name }], photoCount, photoComments: [送る文字列…],
+   *           photoPicks: [選んだ会社…], photoTexts: [自由記入…] }(photoPicks・photoTexts があればそれで確かめる。仕様 D78)
    * 戻り値 = 欠けている・誤っている項目の一覧。空なら確認へ進める。
    */
   function validate(state, config, now) {
@@ -267,7 +324,7 @@
       errors.push({ field: 'photos', message: '写真は ' + MAX_PHOTOS + ' 枚までにしてください' });
     }
     (s.photoComments || []).forEach(function (c, i) {
-      var m = commentMessage(i, c);
+      var m = s.photoTexts ? photoCommentMessage(i, (s.photoPicks || [])[i] || '', s.photoTexts[i]) : commentMessage(i, c);
       if (m) errors.push({ field: 'comments', message: m });
     });
 
@@ -368,6 +425,8 @@
     });
     // 自社の文字(「自分が実施」の会社)は会社名と同じ決まり(仕様 D52)
     if (badCompanyText(config.ownCompany)) problems.push('ownCompany');
+    // 自社の文字は写真ごとの会社の先頭の選択肢でもある(印を付けたコメントの決まりに合うこと。review engineer-R1-005)
+    if (typeof config.ownCompany === 'string' && (commentProblem(pickMarker(config.ownCompany)) || bracketInName(config.ownCompany))) problems.push('ownCompany:pick');
     (config.roster || []).forEach(function (r, i) {
       if (badCompanyText(r.company)) problems.push('roster[' + i + '].company');
       if (!findSite(config, r.site)) problems.push('roster[' + i + '].site');
@@ -377,10 +436,23 @@
     if (!(config.roster || []).length) problems.push('roster');
     // 立場は本文の書式(版)の一部。受け側の流れと同じ 3 つ・同じ順でなければ止める(変えるときは版を上げる)
     if (JSON.stringify(config.roles) !== JSON.stringify(ROLES_V2) || config.otherRole !== ROLES_V2[2]) problems.push('roles');
-    // どの現場にも、選べる会社が 1 社以上あること(無いと選べずに止まる)と、自社の行があること(仕様 D52)
+    // どの現場にも自社の行があること(仕様 D52)。自社以外の会社が 0 社の現場は誤りにしない(「自分が実施」で送る。仕様 D71)
     (config.sites || []).forEach(function (s) {
-      if (!visibleCompanies(config, s.code).length) problems.push('roster:' + s.code);
       if (companiesForSite(config, s.code).indexOf(config.ownCompany) === -1) problems.push('roster-own:' + s.code);
+    });
+    // 写真ごとに選べる会社の一覧(仕様 D79)。ファイルが無いときは選ぶ欄を出さないだけ(誤りにしない)
+    var seenTargets = {};
+    (config.targets || []).forEach(function (t, i) {
+      if (!t || typeof t !== 'object' || Object.keys(t).some(function (k) { return k !== 'site' && k !== 'company'; })) {
+        problems.push('targets[' + i + '].keys');
+        return;
+      }
+      if (!findSite(config, t.site)) problems.push('targets[' + i + '].site');
+      if (badCompanyText(t.company) || commentProblem(pickMarker(t.company)) || bracketInName(t.company)) problems.push('targets[' + i + '].company');
+      if (t.company === config.ownCompany) problems.push('targets[' + i + '].own');
+      var key = t.site + '\n' + t.company;
+      if (seenTargets[key]) problems.push('targets[' + i + '].dup');
+      seenTargets[key] = true;
     });
     return problems;
   }
@@ -391,6 +463,8 @@
     findSite: findSite,
     companiesForSite: companiesForSite,
     visibleCompanies: visibleCompanies,
+    hasPartners: hasPartners,
+    selfOnlyEntry: selfOnlyEntry,
     parseSiteParam: parseSiteParam,
     entryMode: entryMode,
     filterSites: filterSites,
@@ -401,6 +475,11 @@
     cleanComment: cleanComment,
     commentProblem: commentProblem,
     commentMessage: commentMessage,
+    pickMarker: pickMarker,
+    composeComment: composeComment,
+    freeTextProblem: freeTextProblem,
+    photoCommentMessage: photoCommentMessage,
+    targetsForSite: targetsForSite,
     FORM_VERSION: FORM_VERSION,
     MAX_COMMENT: MAX_COMMENT,
     validate: validate,
@@ -423,15 +502,18 @@
   var doc = root.document;
   var config = root.PATROL_CONFIG || { sites: [] };
   config.roster = root.PATROL_ROSTER || [];
+  // 写真ごとに選べる会社の一覧(targets.js)。無い・読めないときは選ぶ欄を出さない(仕様 D79)
+  config.targets = Array.isArray(root.PATROL_TARGETS) ? root.PATROL_TARGETS : [];
   var O = root.PatrolOutbox;
 
   // who = 'partner'(協力会社が自分の紙を送る・現場 QR の既定)/ 'paper'(社員が協力会社の紙を代わりに送る)/ 'self'(社員が自分で実施した分)
   var state = { date: '', dept: '', site: '', members: [], photoCount: 0, photoComments: [], who: '', whoRequired: false };
   var selfName = '';   // 「自分が実施」の氏名(続けて入れるときも残す)
   // 開いたときの入口(URL の s から決める。仕様 D48)
-  var entry = { mode: 'all', codes: [], unknown: 0, shown: [] };
+  var entry = { mode: 'all', codes: [], unknown: 0, shown: [], selfOnly: false };
+  var chooserKind = 'all';
   var rechooseFrom = null; // 選び直しの確かめを開いたボタン(「やめる」でフォーカスを戻す)
-  var photos = [];     // { file, url, comment }
+  var photos = [];     // { file, url, comment, pick }(pick = 選んだ会社。'' = 指定なし。仕様 D78)
   var meta = null;     // 確認画面に入った時点で作る { ref, created }
   var ready = null;    // 送る形にした写真 [{ type, data }](確認画面で用意する)
   var prepToken = 0;   // 古い準備の結果を捨てるための番号
@@ -479,10 +561,30 @@
     state.dept = site ? site.dept : '';
     $('site-fixed-code').textContent = site ? site.code : '';
     $('site-fixed-dept').textContent = site ? site.dept : '';
+    // 新しい現場の一覧に無い会社の選択は「指定なし」に戻す(自由記入は残す。仕様 D78)
+    var choices = targetsForSite(config, state.site);
+    var changed = false;
+    photos.forEach(function (p) {
+      if (p.pick && choices.indexOf(p.pick) === -1) { p.pick = ''; changed = true; }
+    });
+    // 黙って戻さず、戻したことを知らせる(review ux-R1-003)。知らせは「続けて別の記録を入れる」まで残す
+    // (選び直しの途中の setSite('') の後の setSite で消さない。review ux-R2-001・engineer-R2-001)。
+    // 欄は隠さずに文字だけ入れ替える(隠した欄を出すと読み上げられないことがあるため。review ux-R2-002)
+    if (changed) $('pick-reset').textContent = '現場が変わったので、写真ごとの会社の選択を「指定なし」に戻したものがあります。写真ごとに確かめてください。';
+    if (photos.length) renderPhotos();
   }
 
-  // 選択肢を作り直す。いま選んでいる現場が選択肢から外れたら、未選択に戻す
+  // 送るコメント(印つき)を写真の順にそろえる(仕様 D78)
+  function syncComments() {
+    state.photoComments = photos.map(function (q) { return composeComment(q.pick, q.comment); });
+    state.photoPicks = photos.map(function (q) { return q.pick || ''; });
+    state.photoTexts = photos.map(function (q) { return q.comment || ''; });
+  }
+
+  // 選択肢を作り直す。いま選んでいる現場が選択肢から外れたら、未選択に戻す。
+  // 協力会社の紙(partner・paper)では、自社以外の会社が 0 社の現場を出さない(会社を選べずに止まるため。仕様 D71)
   function fillSiteOptions(list) {
+    if (state.who === 'partner' || state.who === 'paper') list = list.filter(function (s) { return hasPartners(config, s.code); });
     var sel = $('site-select');
     sel.textContent = '';
     sel.appendChild(el('option', { value: '' }, '選んでください'));
@@ -500,6 +602,7 @@
 
   // 現場の選び方を切り替える: 'fixed'(URL の 1 現場)/ 'list'(リンクの現場だけ)/ 'all'(全現場・部署で絞る・コードで探す)
   function showChooser(kind) {
+    chooserKind = kind;
     $('site-confirm').hidden = true;
     $('site-fixed').hidden = kind !== 'fixed';
     $('site-choose').hidden = kind === 'fixed';
@@ -508,15 +611,24 @@
     $('site-list-hint').hidden = kind !== 'list';
     if (kind === 'fixed') {
       setSite(entry.codes[0]);
-    } else if (kind === 'list') {
-      $('site-list-hint').textContent = 'リンクの現場(' + entry.codes.length + ' 件)から選んでください。';
-      fillSiteOptions(sitesOfCodes(entry.codes));
     } else {
-      $('site-dept').value = '';
-      $('site-search').value = '';
-      fillSiteOptions(config.sites);
+      if (kind !== 'list') {
+        $('site-dept').value = '';
+        $('site-search').value = '';
+      }
+      refillSites();
     }
     renderWho();
+  }
+
+  // 今の選び方の選択肢を作り直す(「協力会社の紙」と「自分が実施」で出す現場が違うため。仕様 D71)
+  function refillSites() {
+    if (chooserKind === 'list') {
+      fillSiteOptions(sitesOfCodes(entry.codes));
+      $('site-list-hint').textContent = 'リンクの現場(' + ($('site-select').options.length - 1) + ' 件)から選んでください。';
+    } else if (chooserKind === 'all') {
+      fillSiteOptions(filterSites(config, $('site-dept').value, $('site-search').value));
+    }
   }
 
   // 「違う現場を選ぶ」「一覧の外の現場を選ぶ」は、押した後に確かめる(仕様 D50)
@@ -577,8 +689,11 @@
     // 一覧にあるコードが 0 で、一覧に無いコードがある(古い現場 QR・打ち間違い)ときは、協力会社の画面のまま全現場から選ぶ。
     // 社員はそこから「自分が実施」のボタンで入れる(仕様 D49。engineer-R1-005)
     var partnerAll = entry.mode === 'all' && entry.unknown > 0;
-    state.whoRequired = entry.mode !== 'single' && !partnerAll;
-    state.who = state.whoRequired ? '' : 'partner';
+    // 入口で選べる現場がすべて協力会社 0 社なら、入口の種類にかかわらず「自分が実施」で始め、2 択・協力会社の画面を出さない(仕様 D71)
+    entry.selfOnly = selfOnlyEntry(config, entry.mode === 'all' ? config.sites.map(function (s) { return s.code; }) : entry.codes);
+    state.whoRequired = !entry.selfOnly && entry.mode !== 'single' && !partnerAll;
+    state.who = entry.selfOnly ? 'self' : state.whoRequired ? '' : 'partner';
+    if (entry.selfOnly) state.members = selfMembers(config, selfName);
     renderSiteNotice();
     showChooser(entry.mode === 'single' ? 'fixed' : entry.mode);
   }
@@ -588,6 +703,8 @@
     var choosing = state.whoRequired && !state.who;
     $('who').hidden = !choosing;
     $('who-chosen').hidden = !(state.who === 'paper' || state.who === 'self');
+    // 協力会社 0 社の現場だけの入口では「選び直す」を出さない(戻る先の 2 択・協力会社の画面が無い。仕様 D71)
+    $('who-change').hidden = entry.selfOnly;
     $('who-chosen-text').textContent = state.who === 'self' ? '自分が実施した分を送ります' : state.who === 'paper' ? '協力会社の紙を代わりに送ります' : '';
     $('input-body').hidden = choosing;
     // 現場 QR(と協力会社の画面の全現場)から社員が入る小さなボタン 2 つ(engineer-R2-004)
@@ -600,8 +717,10 @@
   }
 
   function setWho(who) {
+    if (entry.selfOnly && who !== 'self') return;
     state.who = who;
     state.members = who === 'self' ? selfMembers(config, selfName) : [];
+    refillSites();
     renderWho();
     renderCompanies();
     refresh();
@@ -709,25 +828,46 @@
   function renderPhotos() {
     var list = $('photo-list');
     list.textContent = '';
+    var choices = targetsForSite(config, state.site);
     photos.forEach(function (p, i) {
       var li = el('li', { 'class': 'photo' });
       li.appendChild(el('img', { src: p.url, alt: 'チェックシートの写真 ' + (i + 1) }));
       // 写真ごとのコメント(任意・1 行。仕様 D61)。入力のたびに確かめ、理由を欄の下に出す
       var id = 'photo-comment-' + i;
-      li.appendChild(el('label', { 'for': id, 'class': 'comment-label' }, '写真 ' + (i + 1) + ' のコメント(任意・' + MAX_COMMENT + ' 字まで)'));
+      // 作り直し(現場を替えたとき)で古い理由が読み上げ直されないよう、role=alert ではなく polite にする(review ux-R1-003)
+      var err = el('p', { id: id + '-error', 'class': 'error comment-error', 'aria-live': 'polite' });
       var input = el('input', { type: 'text', id: id, 'class': 'photo-comment', autocomplete: 'off', 'aria-describedby': id + '-error' });
-      input.value = p.comment || '';
-      var err = el('p', { id: id + '-error', 'class': 'error comment-error', role: 'alert' });
-      // 理由が変わったときだけ書き換える(打つたびに同じ理由が読み上げられないように。review engineer の所見)
+      // 理由が変わったときだけ書き換える(打つたびに同じ理由が読み上げられないように。review engineer の所見)。
+      // 確かめるのは印の付いた送る値(仕様 D78)
       var showErr = function () {
-        var m = commentMessage(i, p.comment) || '';
+        var m = photoCommentMessage(i, p.pick, p.comment) || '';
+        // 欄は隠さず、文字だけ入れ替える(review ux-R2-002)
         if (err.textContent !== m) err.textContent = m;
-        err.hidden = !m;
         input.setAttribute('aria-invalid', m ? 'true' : 'false');
       };
+      // 写真ごとの会社(任意・仕様 D77)。その現場の一覧があるときだけ出す
+      if (choices.length) {
+        var pid = 'photo-pick-' + i;
+        li.appendChild(el('label', { 'for': pid, 'class': 'comment-label' }, '写真 ' + (i + 1) + ' はどの会社の指摘か(任意)'));
+        var sel = el('select', { id: pid, 'class': 'photo-pick', 'aria-describedby': id + '-error' });
+        sel.appendChild(el('option', { value: '' }, '指定なし(どの会社とも言えない)'));
+        choices.forEach(function (c) {
+          sel.appendChild(el('option', { value: c }, c));
+        });
+        sel.value = p.pick || '';
+        sel.addEventListener('change', function () {
+          p.pick = sel.value;
+          syncComments();
+          showErr();
+          refresh();
+        });
+        li.appendChild(sel);
+      }
+      li.appendChild(el('label', { 'for': id, 'class': 'comment-label' }, '写真 ' + (i + 1) + ' のコメント(任意・' + (choices.length ? '会社名を含めて ' : '') + MAX_COMMENT + ' 字まで)'));
+      input.value = p.comment || '';
       input.addEventListener('input', function () {
         p.comment = input.value;
-        state.photoComments = photos.map(function (q) { return q.comment || ''; });
+        syncComments();
         showErr();
         refresh();
       });
@@ -745,11 +885,16 @@
       list.appendChild(li);
     });
     state.photoCount = photos.length;
-    state.photoComments = photos.map(function (q) { return q.comment || ''; });
+    syncComments();
     $('photo-count').textContent = photos.length ? '選んだ写真: ' + photos.length + ' 枚' : 'まだ選んでいません';
   }
 
   function refresh() {
+    // 送る氏名は欄に見えている値(ブラウザが欄の値を戻したときは input が出ないため、ここで読む。仕様 D72)
+    if (state.who === 'self') {
+      selfName = $('self-name').value;
+      state.members = selfMembers(config, selfName);
+    }
     var errors = validate(state, config);
     var ul = $('missing');
     ul.textContent = '';
@@ -780,8 +925,8 @@
     photos.forEach(function (p, i) {
       var li = el('li', { 'class': 'photo' });
       li.appendChild(el('img', { src: p.url, alt: 'チェックシートの写真 ' + (i + 1) }));
-      // 写真とコメントの組(仕様 D61)。送る値と同じく前後の空白を除いて出す
-      var c = cleanComment(p.comment);
+      // 写真とコメントの組(仕様 D61)。送る値(選んだ会社の印を含む。仕様 D78)と同じ形で出す
+      var c = composeComment(p.pick, p.comment);
       li.appendChild(el('p', { 'class': c ? 'photo-comment-text' : 'photo-comment-text none' }, c || '(コメントなし)'));
       list.appendChild(li);
     });
@@ -1150,6 +1295,7 @@
     $('date').max = todayLocal(); // 日付が変わっていたら、今日を選べるように
     $('prep-error').hidden = true;
     $('photo-over').hidden = true;
+    $('pick-reset').textContent = '';
     var btn = $('send');
     btn.disabled = true;
     btn.textContent = '写真を準備しています…';
@@ -1194,7 +1340,7 @@
         if (f.type && f.type.indexOf('image/') !== 0) return;
         // 上限を超えた分は読み込まない(大量の写真で画面が重くならないように)
         if (photos.length >= MAX_PHOTOS) { over++; return; }
-        photos.push({ file: f, url: root.URL.createObjectURL(f), comment: '' });
+        photos.push({ file: f, url: root.URL.createObjectURL(f), comment: '', pick: '' });
       });
       photoInput.value = '';
       $('photo-over').hidden = over === 0;
