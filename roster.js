@@ -15,7 +15,11 @@
     { site: 'P-01', company: '自社' },
     { site: 'P-02', company: '自社' },
     { site: 'P-03', company: '自社' },
-    { site: 'P-04', company: '自社' }
+    { site: 'P-04', company: '自社' },
+    { site: 'P-05', company: '自社' },
+    { site: 'P-06', company: '自社' },
+    { site: 'P-07', company: '自社' },
+    { site: 'P-08', company: '自社' }
   ];
 
   root.PATROL_ROSTER = PATROL_ROSTER;

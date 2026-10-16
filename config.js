@@ -34,7 +34,11 @@
       { code: 'P-01', dept: 'B-1' },
       { code: 'P-02', dept: 'B-1' },
       { code: 'P-03', dept: 'B-2' },
-      { code: 'P-04', dept: 'B-2' }
+      { code: 'P-04', dept: 'B-2' },
+      { code: 'P-05', dept: 'B-1' },
+      { code: 'P-06', dept: 'B-2' },
+      { code: 'P-07', dept: 'B-1' },
+      { code: 'P-08', dept: 'B-2' }
     ]
   };
 
