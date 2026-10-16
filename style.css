@@ -139,3 +139,13 @@ h3 { font-size: 1rem; margin: 24px 0 6px; }
 .site-big { font-size: 1.6rem; font-weight: 700; margin: 4px 0 12px; overflow-wrap: anywhere; }
 .note { border-left: 4px solid var(--border); padding-left: 8px; }
 #self-box input[type=text] { font-size: 17px; width: 100%; min-height: 48px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--fg); }
+
+/* 最初の 2 択(同じ大きさの大きなボタン。仕様 D117)・社員の立場・送る人の確かめ(仕様 D120) */
+.kind-buttons button { min-height: 72px; font-size: 1.25rem; font-weight: 700; width: 100%; }
+.staff-roles { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+.who-big { border: 2px solid var(--accent); border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; }
+.who-big-head { font-weight: 700; margin: 0 0 6px; }
+.who-big ul { margin: 0; padding-left: 1.2em; font-size: 1.4rem; font-weight: 700; }
+.who-big li + li { margin-top: 8px; }
+.who-line { display: block; }
+.who-big-ask { margin: 8px 0 0; font-size: 1.1rem; font-weight: 700; color: var(--accent); }

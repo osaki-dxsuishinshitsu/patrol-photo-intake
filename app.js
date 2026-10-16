@@ -95,12 +95,6 @@
     return visibleCompanies(config, siteCode).length > 0;
   }
 
-  // 入口で選べる現場がすべて協力会社 0 社か(そうなら「自分が実施」で始める。仕様 D71)。
-  // codes = 入口で選べる現場のコード(現場 QR = その 1 つ・社員用リンク = 並んだコード・全現場 = 全部)
-  function selfOnlyEntry(config, codes) {
-    return codes.length > 0 && codes.every(function (c) { return !hasPartners(config, c); });
-  }
-
   // URL の s で読む要素の数の上限と、画面に出す一覧に無いコードの数の上限(仕様 D49)
   var MAX_PARAM_ITEMS = 50;
   var MAX_SHOWN_UNKNOWN = 3;
@@ -159,6 +153,24 @@
   // 「自分が実施」の実施者(会社 = 自社・立場 = その他 + 氏名)。送る中身の形は変えない
   function selfMembers(config, name) {
     return [{ company: config.ownCompany, role: config.otherRole, name: String(name || '') }];
+  }
+
+  // 社員が自分の分を送るときの氏名 = 立場の語 + 半角の空白 + 氏名(試用の間の仮。送る中身の形と版は変えない。仕様 D118)。
+  // 氏名が空なら空(立場の語だけで送らせない)
+  function staffName(token, name) {
+    var n = String(name || '').trim();
+    return n && token ? token + ' ' + n : n;
+  }
+
+  // 画面に出す会社名。自社の文字は社名で出す(送る値と印は自社の文字のまま。仕様 D119)
+  function displayCompany(config, c) {
+    return c === config.ownCompany && config.ownCompanyLabel ? config.ownCompanyLabel : c;
+  }
+
+  // 社員の立場の語 → 画面の名前(config.staffRoles。仕様 D118)
+  function staffRoleLabel(config, token) {
+    var hit = (config.staffRoles || []).filter(function (r) { return r.token === token; })[0];
+    return hit ? hit.label : '';
   }
 
   // 選ばれた実施者をその現場の一覧の並び順にそろえ、重複(同じ会社)と一覧外を落とす
@@ -270,9 +282,12 @@
     var errors = [];
     var s = state || {};
 
-    // 社員用リンク・全現場の入口では、最初に 2 択を選ぶ(仕様 D52)
+    // どの入口でも、最初に「社員」か「協力会社の方」かを選び、社員は立場と何を送るかを選ぶ(仕様 D117・D118)
     if (s.whoRequired && !s.who) {
-      errors.push({ field: 'who', message: '「協力会社の紙を代わりに送る」か「自分が実施」を選んでください' });
+      errors.push({ field: 'who', message: s.kind === 'staff' ? '立場と、何を送るかを選んでください' : '最初に「社員」か「協力会社の方」かを選んでください' });
+    }
+    if ((s.who === 'self' || s.who === 'paper') && (config.staffRoles || []).length && !staffRoleLabel(config, s.staffRole)) {
+      errors.push({ field: 'who', message: '立場を選んでください' });
     }
 
     if (!s.date) {
@@ -301,7 +316,7 @@
     // 現場を選んだ後は、実施者が自社の 1 行であることを確かめる(security-R2-005)
     if (s.who === 'self') {
       if (s.site && site && (members.length !== 1 || members[0].company !== config.ownCompany)) {
-        errors.push({ field: 'companies', message: 'この現場の一覧に自社がありません。担当に連絡してください' });
+        errors.push({ field: 'companies', message: 'この現場の一覧に' + displayCompany(config, config.ownCompany) + 'がありません。担当に連絡してください' });
       }
     } else if (members.length === 0) {
       errors.push({ field: 'companies', message: '実施した会社を 1 社以上選んでください' });
@@ -309,12 +324,17 @@
       errors.push({ field: 'companies', message: '会社は ' + MAX_COMPANIES + ' 社までにしてください' });
     }
     members.forEach(function (m) {
+      var shown = displayCompany(config, m.company);
+      // 社員の自分の分の氏名は、頭に立場の語が付いた形で数える(仕様 D118)
+      var withRole = s.who === 'self' && m.company === config.ownCompany && s.staffRole;
       if ((config.roles || []).indexOf(m.role) === -1) {
-        errors.push({ field: 'roles', message: '「' + m.company + '」で実施した人の立場を選んでください' });
+        errors.push({ field: 'roles', message: '「' + shown + '」で実施した人の立場を選んでください' });
       } else if (m.role === config.otherRole && !m.name) {
-        errors.push({ field: 'roles', message: '「' + m.company + '」で実施した人の氏名を入れてください' });
+        errors.push({ field: 'roles', message: '「' + shown + '」で実施した人の氏名を入れてください' });
       } else if (m.role === config.otherRole && !isValidName(m.name)) {
-        errors.push({ field: 'roles', message: '「' + m.company + '」の氏名は ' + MAX_NAME + ' 文字までで、; | = / @ と URL は使えません(先頭に + - も使えません)' });
+        errors.push({ field: 'roles', message: withRole ?
+          '氏名は、頭に付ける立場(' + s.staffRole + ' と空白)を含めて ' + MAX_NAME + ' 文字までで、; | = / @ と URL は使えません' :
+          '「' + shown + '」の氏名は ' + MAX_NAME + ' 文字までで、; | = / @ と URL は使えません(先頭に + - も使えません)' });
       }
     });
 
@@ -427,6 +447,23 @@
     if (badCompanyText(config.ownCompany)) problems.push('ownCompany');
     // 自社の文字は写真ごとの会社の先頭の選択肢でもある(印を付けたコメントの決まりに合うこと。review engineer-R1-005)
     if (typeof config.ownCompany === 'string' && (commentProblem(pickMarker(config.ownCompany)) || bracketInName(config.ownCompany))) problems.push('ownCompany:pick');
+    // 画面に出す自社の名前(仕様 D119)。無くてもよい(そのときは自社の文字のまま出す)
+    if (config.ownCompanyLabel !== undefined && badCompanyText(config.ownCompanyLabel)) problems.push('ownCompanyLabel');
+    // 社員の立場(仕様 D118)。語は氏名の頭に付けて送るので、氏名と同じ決まりで、空白を含まない短い語
+    if (config.staffRoles !== undefined) {
+      if (!Array.isArray(config.staffRoles) || !config.staffRoles.length) {
+        problems.push('staffRoles');
+      } else {
+        var seenRoles = {};
+        config.staffRoles.forEach(function (r, i) {
+          if (!r || typeof r.label !== 'string' || !r.label || r.label.length > 20 || BAD_CHAR_RE.test(r.label) ||
+              typeof r.token !== 'string' || !isValidName(r.token) || /\s/.test(r.token) || r.token.length > 8 || seenRoles['$' + r.token]) {
+            problems.push('staffRoles[' + i + ']');
+          }
+          if (r && typeof r.token === 'string') seenRoles['$' + r.token] = true;
+        });
+      }
+    }
     (config.roster || []).forEach(function (r, i) {
       if (badCompanyText(r.company)) problems.push('roster[' + i + '].company');
       if (!findSite(config, r.site)) problems.push('roster[' + i + '].site');
@@ -436,7 +473,7 @@
     if (!(config.roster || []).length) problems.push('roster');
     // 立場は本文の書式(版)の一部。受け側の流れと同じ 3 つ・同じ順でなければ止める(変えるときは版を上げる)
     if (JSON.stringify(config.roles) !== JSON.stringify(ROLES_V2) || config.otherRole !== ROLES_V2[2]) problems.push('roles');
-    // どの現場にも自社の行があること(仕様 D52)。自社以外の会社が 0 社の現場は誤りにしない(「自分が実施」で送る。仕様 D71)
+    // どの現場にも自社の行があること(仕様 D52)。自社以外の会社が 0 社の現場は誤りにしない(協力会社の道では選べない。仕様 D71・D117)
     (config.sites || []).forEach(function (s) {
       if (companiesForSite(config, s.code).indexOf(config.ownCompany) === -1) problems.push('roster-own:' + s.code);
     });
@@ -464,7 +501,9 @@
     companiesForSite: companiesForSite,
     visibleCompanies: visibleCompanies,
     hasPartners: hasPartners,
-    selfOnlyEntry: selfOnlyEntry,
+    staffName: staffName,
+    displayCompany: displayCompany,
+    staffRoleLabel: staffRoleLabel,
     parseSiteParam: parseSiteParam,
     entryMode: entryMode,
     filterSites: filterSites,
@@ -506,11 +545,18 @@
   config.targets = Array.isArray(root.PATROL_TARGETS) ? root.PATROL_TARGETS : [];
   var O = root.PatrolOutbox;
 
-  // who = 'partner'(協力会社が自分の紙を送る・現場 QR の既定)/ 'paper'(社員が協力会社の紙を代わりに送る)/ 'self'(社員が自分で実施した分)
-  var state = { date: '', dept: '', site: '', members: [], photoCount: 0, photoComments: [], who: '', whoRequired: false };
+  // kind = ''(まだ選んでいない)/ 'staff'(社員)/ 'partner'(協力会社の方)。仕様 D117
+  // who = 'partner'(協力会社が自分の紙を送る)/ 'paper'(社員が協力会社の紙を代わりに送る)/ 'self'(社員が自分で実施した分)
+  // staffRole = 社員の立場の語(config.staffRoles の token。仕様 D118)
+  var state = { date: '', dept: '', site: '', members: [], photoCount: 0, photoComments: [], who: '', whoRequired: true, kind: '', staffRole: '' };
   var selfName = '';   // 「自分が実施」の氏名(続けて入れるときも残す)
   // 開いたときの入口(URL の s から決める。仕様 D48)
-  var entry = { mode: 'all', codes: [], unknown: 0, shown: [], selfOnly: false };
+  var entry = { mode: 'all', codes: [], unknown: 0, shown: [] };
+
+  // 自分の分の実施者(氏名の頭に立場の語。仕様 D118)
+  function selfMembersNow() {
+    return selfMembers(config, staffName(state.staffRole, selfName));
+  }
   var chooserKind = 'all';
   var rechooseFrom = null; // 選び直しの確かめを開いたボタン(「やめる」でフォーカスを戻す)
   var photos = [];     // { file, url, comment, pick }(pick = 選んだ会社。'' = 指定なし。仕様 D78)
@@ -686,60 +732,88 @@
     // ページが読む URL のパラメータは s だけ(仕様 D48)
     var parsed = parseSiteParam(config, new URLSearchParams(root.location.search).get('s'));
     entry = { mode: entryMode(parsed.codes), codes: parsed.codes, unknown: parsed.unknown, shown: parsed.shown };
-    // 一覧にあるコードが 0 で、一覧に無いコードがある(古い現場 QR・打ち間違い)ときは、協力会社の画面のまま全現場から選ぶ。
-    // 社員はそこから「自分が実施」のボタンで入れる(仕様 D49。engineer-R1-005)
-    var partnerAll = entry.mode === 'all' && entry.unknown > 0;
-    // 入口で選べる現場がすべて協力会社 0 社なら、入口の種類にかかわらず「自分が実施」で始め、2 択・協力会社の画面を出さない(仕様 D71)
-    entry.selfOnly = selfOnlyEntry(config, entry.mode === 'all' ? config.sites.map(function (s) { return s.code; }) : entry.codes);
-    state.whoRequired = !entry.selfOnly && entry.mode !== 'single' && !partnerAll;
-    state.who = entry.selfOnly ? 'self' : state.whoRequired ? '' : 'partner';
-    if (entry.selfOnly) state.members = selfMembers(config, selfName);
+    // どの入口でも(現場 QR・社員用リンク・全現場・一覧に無いコードだけ)、最初に「社員」か「協力会社の方」かを選ぶ(仕様 D117。
+    // 前の「協力会社 0 社の現場は自分が実施で始める」(D71)と「現場 QR は協力会社の画面で始める」(D52)の入口の違いは無くした)
+    state.whoRequired = true;
+    state.kind = '';
+    state.who = '';
     renderSiteNotice();
     showChooser(entry.mode === 'single' ? 'fixed' : entry.mode);
   }
 
-  // 2 択(社員用リンク・全現場)と、現場 QR から「自分が実施」へ入る小さなボタン(仕様 D52・D53)
+  // 最初の 2 択(社員 / 協力会社の方)→ 社員は立場と何を送るか → 入力(仕様 D117・D118・D52・D53)
   function renderWho() {
-    var choosing = state.whoRequired && !state.who;
-    $('who').hidden = !choosing;
-    $('who-chosen').hidden = !(state.who === 'paper' || state.who === 'self');
-    // 協力会社 0 社の現場だけの入口では「選び直す」を出さない(戻る先の 2 択・協力会社の画面が無い。仕様 D71)
-    $('who-change').hidden = entry.selfOnly;
-    $('who-chosen-text').textContent = state.who === 'self' ? '自分が実施した分を送ります' : state.who === 'paper' ? '協力会社の紙を代わりに送ります' : '';
-    $('input-body').hidden = choosing;
-    // 現場 QR(と協力会社の画面の全現場)から社員が入る小さなボタン 2 つ(engineer-R2-004)
-    $('staff-entry').hidden = !(!state.whoRequired && state.who === 'partner');
+    var label = displayCompany(config, config.ownCompany);
+    var roleLabel = staffRoleLabel(config, state.staffRole);
+    $('kind').hidden = !!state.kind;
+    $('who').hidden = !(state.kind === 'staff' && !state.who);
+    $('who-chosen').hidden = !state.who;
+    $('who-chosen-text').textContent = state.who === 'partner' ? '協力会社の方として送ります' :
+      state.who === 'self' ? label + 'の社員' + (roleLabel ? '(' + roleLabel + ')' : '') + '・自分のチェックシートを送ります' :
+      state.who === 'paper' ? label + 'の社員' + (roleLabel ? '(' + roleLabel + ')' : '') + '・協力会社の紙を代わりに送ります' : '';
+    $('input-body').hidden = !state.who;
     $('note-partner').hidden = state.who !== 'partner';
     $('note-staff').hidden = state.who !== 'paper';
     $('companies-box').hidden = state.who === 'self';
     $('self-box').hidden = state.who !== 'self';
-    $('self-company').textContent = config.ownCompany;
+    $('self-company').textContent = label;
+    // 立場の設定(config.staffRoles)が無い版の設定では、立場を問わない(立場は今までどおり「その他」)
+    var needRole = (config.staffRoles || []).length > 0;
+    $('self-role').textContent = roleLabel || config.otherRole;
+    $('staff-roles').hidden = !needRole;
+    // 立場を選ぶまで「何を送るか」は押せない
+    $('who-self').disabled = needRole && !roleLabel;
+    $('who-paper').disabled = needRole && !roleLabel;
+    // 氏名の欄は、頭に付ける立場の語と空白の分だけ短くする(仕様 D118)
+    $('self-name').maxLength = MAX_NAME - (state.staffRole ? state.staffRole.length + 1 : 0);
   }
 
   function setWho(who) {
-    if (entry.selfOnly && who !== 'self') return;
     state.who = who;
-    state.members = who === 'self' ? selfMembers(config, selfName) : [];
+    state.members = who === 'self' ? selfMembersNow() : [];
     refillSites();
     renderWho();
     renderCompanies();
     refresh();
   }
 
+  // 最初の 2 択へ戻る(立場の選択も外す)
+  function backToKind() {
+    state.kind = '';
+    state.staffRole = '';
+    Array.prototype.forEach.call(doc.querySelectorAll('input[name="staff-role"]'), function (x) { x.checked = false; });
+    setWho('');
+    refocus('kind-staff');
+  }
+
   function initWho() {
+    var label = displayCompany(config, config.ownCompany);
+    $('kind-staff').textContent = label + 'の社員';
     // 押したボタンが隠れるときは、次に操作する欄へフォーカスを移す(engineer-R1-006)
+    $('kind-staff').addEventListener('click', function () { state.kind = 'staff'; setWho(''); refocus((config.staffRoles || []).length ? 'staff-role-0' : 'who-self'); });
+    $('kind-partner').addEventListener('click', function () { state.kind = 'partner'; setWho('partner'); refocus('date'); });
+    // 社員の立場(config.staffRoles の並び。仕様 D118)
+    var box = $('staff-roles');
+    (config.staffRoles || []).forEach(function (r, i) {
+      var rid = 'staff-role-' + i;
+      var lab = el('label', { 'for': rid, 'class': 'check' });
+      var radio = el('input', { type: 'radio', id: rid, name: 'staff-role', value: r.token });
+      radio.addEventListener('change', function () {
+        state.staffRole = r.token;
+        renderWho();
+        refresh();
+      });
+      lab.appendChild(radio);
+      lab.appendChild(el('span', null, r.label));
+      box.appendChild(lab);
+    });
     $('who-paper').addEventListener('click', function () { setWho('paper'); refocus('date'); });
     $('who-self').addEventListener('click', function () { setWho('self'); refocus('self-name'); });
-    $('self-entry').addEventListener('click', function () { setWho('self'); refocus('self-name'); });
-    $('paper-entry').addEventListener('click', function () { setWho('paper'); refocus('date'); });
-    // 選び直す: 社員用リンク・全現場では 2 択に戻る。現場 QR(と協力会社の画面の全現場)では協力会社の画面に戻る
-    $('who-change').addEventListener('click', function () {
-      setWho(state.whoRequired ? '' : 'partner');
-      refocus(state.whoRequired ? 'who-paper' : 'paper-entry');
-    });
+    $('kind-back').addEventListener('click', backToKind);
+    $('who-change').addEventListener('click', backToKind);
     $('self-name').addEventListener('input', function () {
       selfName = $('self-name').value;
-      if (state.who === 'self') state.members = selfMembers(config, selfName);
+      if (state.who === 'self') state.members = selfMembersNow();
       refresh();
     });
   }
@@ -763,11 +837,16 @@
     var box = $('company-list');
     box.textContent = '';
     if (state.who === 'self') {
-      state.members = selfMembers(config, selfName);
+      state.members = selfMembersNow();
       return;
     }
     state.members = normalizeMembers(config, state.site, state.members).filter(function (m) { return m.company !== config.ownCompany; });
     $('company-empty').hidden = !!state.site;
+    // 協力会社の一覧が無い現場(現場 QR で開いたとき)は、行き止まりにしないで社員の道を案内する(仕様 D117)
+    $('company-none').hidden = !(state.site && !hasPartners(config, state.site));
+    $('company-none').textContent = state.who === 'paper' ?
+      'この現場には、選べる協力会社がありません。自分の分を送るときは、上の「選び直す」から「自分のチェックシートを送る」を選んでください。' :
+      'この現場には、選べる協力会社がありません。社員の方は、上の「選び直す」から社員を選んでください。';
     visibleCompanies(config, state.site).forEach(function (c, i) {
       var member = findMember(c);
       var wrap = el('div', { 'class': 'member' });
@@ -852,7 +931,8 @@
         var sel = el('select', { id: pid, 'class': 'photo-pick', 'aria-describedby': id + '-error' });
         sel.appendChild(el('option', { value: '' }, '指定なし(どの会社とも言えない)'));
         choices.forEach(function (c) {
-          sel.appendChild(el('option', { value: c }, c));
+          // 値は自社の文字のまま、見える名前だけ社名(仕様 D119)
+          sel.appendChild(el('option', { value: c }, displayCompany(config, c)));
         });
         sel.value = p.pick || '';
         sel.addEventListener('change', function () {
@@ -893,7 +973,7 @@
     // 送る氏名は欄に見えている値(ブラウザが欄の値を戻したときは input が出ないため、ここで読む。仕様 D72)
     if (state.who === 'self') {
       selfName = $('self-name').value;
-      state.members = selfMembers(config, selfName);
+      state.members = selfMembersNow();
     }
     var errors = validate(state, config);
     var ul = $('missing');
@@ -908,11 +988,26 @@
 
   function membersText(members) {
     return members.map(function (m) {
-      return m.company + '(' + m.role + (m.role === config.otherRole ? ': ' + m.name : '') + ')';
+      return displayCompany(config, m.company) + '(' + m.role + (m.role === config.otherRole ? ': ' + m.name : '') + ')';
     }).join('、');
   }
 
   function renderConfirm() {
+    // 送る人(会社・立場・氏名)を大きく出し、本人かを確かめる(仕様 D120)
+    var whoList = $('c-who-list');
+    whoList.textContent = '';
+    normalizeMembers(config, state.site, state.members).forEach(function (m) {
+      var self = state.who === 'self' && m.company === config.ownCompany;
+      var role = self ? (staffRoleLabel(config, state.staffRole) || m.role) : m.role;
+      var name = self ? String(selfName || '').trim() : m.name;
+      // 会社・立場・氏名を 1 行ずつ(途中で折れて読みにくくならないように)
+      var li = el('li');
+      li.appendChild(el('span', { 'class': 'who-line' }, '会社 ' + displayCompany(config, m.company)));
+      li.appendChild(el('span', { 'class': 'who-line' }, '立場 ' + role));
+      if (name) li.appendChild(el('span', { 'class': 'who-line' }, '氏名 ' + name));
+      whoList.appendChild(li);
+    });
+    $('c-who-ask').textContent = state.who === 'paper' ? '紙に書かれた会社・立場と同じですか' : 'ご本人ですか';
     // 現場コードを大きく出す(取り違えの対策・仕様 D51)
     $('c-site-big').textContent = state.site;
     $('c-date').textContent = state.date;
@@ -1283,7 +1378,13 @@
     meta = null;
     currentRef = null;
     state.date = '';
-    state.members = state.who === 'self' ? selfMembers(config, selfName) : [];
+    // 続けて別の記録を入れるときは、最初の 2 択から始める(前の人の区分・立場・何を送るかを残さない。
+    // 自分の分の氏名の欄は D72 のまま残す。仕様 D117・秘書の照合 P2-1)
+    state.kind = '';
+    state.staffRole = '';
+    state.who = '';
+    Array.prototype.forEach.call(doc.querySelectorAll('input[name="staff-role"]'), function (x) { x.checked = false; });
+    state.members = [];
     // 現場を残すのは現場 QR で開いたときだけ(URL の現場に戻す)。社員用リンク・全現場では未選択に戻す(仕様 D51)
     if (entry.mode === 'single') {
       showChooser('fixed');
