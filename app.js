@@ -808,7 +808,7 @@
       box.appendChild(lab);
     });
     $('who-paper').addEventListener('click', function () { setWho('paper'); refocus('date'); });
-    $('who-self').addEventListener('click', function () { setWho('self'); refocus('self-name'); });
+    $('who-self').addEventListener('click', function () { setWho('self'); refocus('date'); });
     $('kind-back').addEventListener('click', backToKind);
     $('who-change').addEventListener('click', backToKind);
     $('self-name').addEventListener('input', function () {
