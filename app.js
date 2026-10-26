@@ -49,6 +49,12 @@
   var MAX_PHOTOS = 10;
   var MAX_PHOTO_BYTES = 1572864;  // 1 枚 1.5 MB
   var MAX_TOTAL_BYTES = 8388608;  // 合計 8 MB
+  // PDF は縮小せずそのまま送る。1 件 5 MB まで(写真の上限とは別。合計と件数は写真と同じ数え方。仕様 D126)
+  var PDF_TYPE = 'application/pdf';
+  var MAX_PDF_BYTES = 5242880;
+  // 20 KB 以下は送れない(受け側の流れの式 E が 20 KB 以下を数えないため。送った人に「受け付けました」と出たまま行ができないのを避ける。仕様 D133)
+  var MIN_PDF_BYTES = 20480;
+  var PDF_B64_HEAD = 'JVBERi0';  // %PDF- の base64
 
   function pad2(n) {
     return (n < 10 ? '0' : '') + n;
@@ -339,9 +345,9 @@
     });
 
     if (!(s.photoCount >= 1)) {
-      errors.push({ field: 'photos', message: 'チェックシートの写真を 1 枚以上選んでください' });
+      errors.push({ field: 'photos', message: 'チェックシートの写真か PDF を 1 件以上選んでください' });
     } else if (s.photoCount > MAX_PHOTOS) {
-      errors.push({ field: 'photos', message: '写真は ' + MAX_PHOTOS + ' 枚までにしてください' });
+      errors.push({ field: 'photos', message: '写真・PDF は ' + MAX_PHOTOS + ' 件までにしてください' });
     }
     (s.photoComments || []).forEach(function (c, i) {
       var m = s.photoTexts ? photoCommentMessage(i, (s.photoPicks || [])[i] || '', s.photoTexts[i]) : commentMessage(i, c);
@@ -385,18 +391,32 @@
     return data.length / 4 * 3 - pad;
   }
 
+  function pdfTooBig(i) {
+    return (i + 1) + ' 件目の PDF が大きすぎます(1 件 5 MB まで)。別のファイルを選ぶか、PDF を小さく作り直してください。';
+  }
+
   // 用意した写真 [{ type, data }] が送れるか。送れないときは本人に見せる文
   function checkPhotos(photos) {
-    if (!photos.length || photos.length > MAX_PHOTOS) return '写真は 1〜' + MAX_PHOTOS + ' 枚にしてください。';
+    var hasPdf = photos.some(function (x) { return x.type === PDF_TYPE; });
+    if (!photos.length || photos.length > MAX_PHOTOS) return hasPdf ? '写真・PDF は 1〜' + MAX_PHOTOS + ' 件にしてください。' : '写真は 1〜' + MAX_PHOTOS + ' 枚にしてください。';
     var total = 0;
     for (var i = 0; i < photos.length; i++) {
       var p = photos[i];
+      // PDF は別の枝(写真の検査は下のまま変えない。仕様 D125)
+      if (p.type === PDF_TYPE) {
+        var pn = base64Bytes(p.data);
+        if (pn > MAX_PDF_BYTES) return pdfTooBig(i);
+        if (p.data.indexOf(PDF_B64_HEAD) !== 0) return (i + 1) + ' 件目の PDF は、PDF のファイルとして読めませんでした。別のファイルを選んでください。';
+        if (pn <= MIN_PDF_BYTES) return (i + 1) + ' 件目の PDF が小さすぎます(20 KB より大きいものだけ送れます)。別のファイルを選ぶか、書類の写真で送ってください。';
+        total += pn;
+        continue;
+      }
       if (p.type !== 'image/jpeg' && p.type !== 'image/png') return (i + 1) + ' 枚目の写真はこの端末で送れる形(JPEG)にできませんでした。カメラで撮り直すか、別の写真を選んでください。';
       var n = base64Bytes(p.data);
       if (n > MAX_PHOTO_BYTES) return (i + 1) + ' 枚目の写真が大きすぎます(1 枚 1.5 MB まで)。撮り直すか、別の写真を選んでください。';
       total += n;
     }
-    if (total > MAX_TOTAL_BYTES) return '写真の合計が大きすぎます(8 MB まで)。枚数を減らしてください。';
+    if (total > MAX_TOTAL_BYTES) return hasPdf ? '写真・PDF の合計が大きすぎます(8 MB まで)。件数を減らしてください。' : '写真の合計が大きすぎます(8 MB まで)。枚数を減らしてください。';
     return null;
   }
 
@@ -578,6 +598,25 @@
     });
     if (text != null) e.textContent = text;
     return e;
+  }
+
+  function isPdf(file) {
+    return !!file && file.type === PDF_TYPE;
+  }
+
+  // 大きさの見せ方(KB は四捨五入・1 MB 以上は小数 1 桁)
+  function fileSize(n) {
+    return n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.round(n / 1024) + ' KB';
+  }
+
+  // 一覧と確認画面の見本: 写真は画像・PDF は「PDF・ファイル名・大きさ」の札(中身は開かない。CSP は変えない。仕様 D127)
+  function thumb(p, i) {
+    if (!isPdf(p.file)) return el('img', { src: p.url, alt: 'チェックシートの写真 ' + (i + 1) });
+    var card = el('div', { 'class': 'pdf-card' });
+    card.appendChild(el('strong', { 'class': 'pdf-mark' }, 'PDF'));
+    card.appendChild(el('span', { 'class': 'pdf-name' }, p.file.name));
+    card.appendChild(el('span', { 'class': 'pdf-size' }, fileSize(p.file.size)));
+    return card;
   }
 
   function show(id) {
@@ -910,7 +949,7 @@
     var choices = targetsForSite(config, state.site);
     photos.forEach(function (p, i) {
       var li = el('li', { 'class': 'photo' });
-      li.appendChild(el('img', { src: p.url, alt: 'チェックシートの写真 ' + (i + 1) }));
+      li.appendChild(thumb(p, i));
       // 写真ごとのコメント(任意・1 行。仕様 D61)。入力のたびに確かめ、理由を欄の下に出す
       var id = 'photo-comment-' + i;
       // 作り直し(現場を替えたとき)で古い理由が読み上げ直されないよう、role=alert ではなく polite にする(review ux-R1-003)
@@ -954,7 +993,7 @@
       li.appendChild(input);
       li.appendChild(err);
       showErr();
-      var rm = el('button', { type: 'button', 'class': 'link' }, 'この写真を外す');
+      var rm = el('button', { type: 'button', 'class': 'link' }, isPdf(p.file) ? 'この PDF を外す' : 'この写真を外す');
       rm.addEventListener('click', function () {
         root.URL.revokeObjectURL(p.url);
         photos.splice(i, 1);
@@ -966,7 +1005,7 @@
     });
     state.photoCount = photos.length;
     syncComments();
-    $('photo-count').textContent = photos.length ? '選んだ写真: ' + photos.length + ' 枚' : 'まだ選んでいません';
+    $('photo-count').textContent = photos.length ? '選んだ写真・PDF: ' + photos.length + ' 件' : 'まだ選んでいません';
   }
 
   function refresh() {
@@ -1014,12 +1053,12 @@
     $('c-dept').textContent = state.dept;
     $('c-site').textContent = state.site;
     $('c-companies').textContent = membersText(normalizeMembers(config, state.site, state.members));
-    $('c-photos').textContent = state.photoCount + ' 枚';
+    $('c-photos').textContent = state.photoCount + ' 件';
     var list = $('c-photo-list');
     list.textContent = '';
     photos.forEach(function (p, i) {
       var li = el('li', { 'class': 'photo' });
-      li.appendChild(el('img', { src: p.url, alt: 'チェックシートの写真 ' + (i + 1) }));
+      li.appendChild(thumb(p, i));
       // 写真とコメントの組(仕様 D61)。送る値(選んだ会社の印を含む。仕様 D78)と同じ形で出す
       var c = composeComment(p.pick, p.comment);
       li.appendChild(el('p', { 'class': c ? 'photo-comment-text' : 'photo-comment-text none' }, c || '(コメントなし)'));
@@ -1090,10 +1129,13 @@
     $('prep-error').hidden = true;
     var out = [];
     var chain = Promise.resolve();
-    photos.forEach(function (p) {
+    photos.forEach(function (p, idx) {
       chain = chain.then(function () {
         if (token !== prepToken) return;
-        return shrinkPhoto(p.file).then(toBase64).then(function (x) { out.push(x); });
+        // 大きすぎる PDF は読み込む前に止める(何十 MB も読んで端末のメモリを使わない。仕様 D133)
+        if (isPdf(p.file) && p.file.size > MAX_PDF_BYTES) throw new Error(pdfTooBig(idx));
+        // PDF は縮小せずそのまま(仕様 D127)。写真は今までどおり縮小する
+        return (isPdf(p.file) ? Promise.resolve(p.file) : shrinkPhoto(p.file)).then(toBase64).then(function (x) { out.push(x); });
       });
     });
     chain.then(function () {
@@ -1107,7 +1149,7 @@
       if (token !== prepToken) return;
       btn.textContent = '送信できません';
       $('prep-error').hidden = false;
-      $('prep-error').textContent = (e && e.message && /枚目|写真/.test(e.message)) ? e.message : '写真を準備できませんでした。写真を選び直してください。';
+      $('prep-error').textContent = (e && e.message && /枚目|件目|写真|PDF/.test(e.message)) ? e.message : '写真を準備できませんでした。写真を選び直してください。';
     });
   }
 
@@ -1142,7 +1184,7 @@
 
   function recordLine(r) {
     var s = r.summary || {};
-    return s.date + ' 現場 ' + s.site + '・会社 ' + s.companies + ' 社・写真 ' + s.photos + ' 枚';
+    return s.date + ' 現場 ' + s.site + '・会社 ' + s.companies + ' 社・写真・PDF ' + s.photos + ' 件';
   }
 
   function renderOutbox() {
@@ -1437,15 +1479,20 @@
     var photoInput = $('photos');
     photoInput.addEventListener('change', function () {
       var over = 0;
+      var skipped = 0;
       Array.prototype.forEach.call(photoInput.files || [], function (f) {
-        if (f.type && f.type.indexOf('image/') !== 0) return;
+        // 写真(image/*)と PDF だけ入れる。それ以外は入れず、件数を知らせる
+        if (f.type && f.type.indexOf('image/') !== 0 && f.type !== PDF_TYPE) { skipped++; return; }
         // 上限を超えた分は読み込まない(大量の写真で画面が重くならないように)
         if (photos.length >= MAX_PHOTOS) { over++; return; }
         photos.push({ file: f, url: root.URL.createObjectURL(f), comment: '', pick: '' });
       });
       photoInput.value = '';
-      $('photo-over').hidden = over === 0;
-      $('photo-over').textContent = over ? '写真は ' + MAX_PHOTOS + ' 枚までです。' + over + ' 枚は入れませんでした。' : '';
+      var notes = [];
+      if (over) notes.push('写真・PDF は ' + MAX_PHOTOS + ' 件までです。' + over + ' 件は入れませんでした。');
+      if (skipped) notes.push('写真・PDF 以外のファイルが ' + skipped + ' 件ありました。入れませんでした。');
+      $('photo-over').hidden = notes.length === 0;
+      $('photo-over').textContent = notes.join(' ');
       renderPhotos();
       refresh();
     });

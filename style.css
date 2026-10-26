@@ -88,6 +88,11 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 /* 入力の写真は 1 列(写真ごとの会社の選択肢の名前が切れないように。仕様 D78・review ux-R1-002)。確認画面は今のまま */
 #photo-list { grid-template-columns: 1fr; }
 .photo img { width: 100%; height: 150px; object-fit: contain; background: var(--panel); border-radius: 6px; display: block; }
+/* PDF の札(画像の代わり。ファイル名と大きさだけ出す。仕様 D127) */
+.pdf-card { box-sizing: border-box; min-height: 64px; padding: 10px 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.pdf-mark { font-size: 1rem; }
+.pdf-name { overflow-wrap: anywhere; }
+.pdf-size { color: var(--muted); font-size: 0.9rem; }
 /* 写真ごとのコメント(仕様 D61)。欄は写真の下に 1 行・確認画面では写真の下に文 */
 .comment-label { display: block; font-size: 0.9rem; color: var(--muted); margin: 6px 0 2px; }
 .photo input.photo-comment { width: 100%; box-sizing: border-box; font-size: 16px; min-height: 44px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--fg); }

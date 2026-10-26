@@ -108,9 +108,9 @@
       <p id="note-staff" class="hint note" hidden>協力会社が自分で送った紙は、ここから送らないでください(同じ紙はどちらか一方だけが送ります)。</p>
 
       <div class="field">
-        <label for="photos">チェックシートの写真(1〜10 枚)</label>
-        <input type="file" id="photos" accept="image/*" multiple>
-        <p class="hint">紙全体を明るい所で、文字が読めるように撮ってください。電波が無い所でも、入力と写真の選択まではできます。</p>
+        <label for="photos">チェックシートの写真・PDF(1〜10 件)</label>
+        <input type="file" id="photos" accept="image/*,application/pdf" multiple>
+        <p class="hint">紙全体を明るい所で、文字が読めるように撮ってください。PDF も送れます(1 件 5 MB まで)。電波が無い所でも、入力と写真・PDF の選択まではできます。</p>
         <p id="photo-count" class="count"></p>
         <p id="photo-over" class="error" role="status" hidden></p>
         <p id="pick-reset" class="hint" role="status"></p>
@@ -141,7 +141,7 @@
         <dt>部署</dt><dd id="c-dept"></dd>
         <dt>現場</dt><dd id="c-site"></dd>
         <dt>実施した会社</dt><dd id="c-companies"></dd>
-        <dt>写真</dt><dd id="c-photos"></dd>
+        <dt>写真・PDF</dt><dd id="c-photos"></dd>
       </dl>
       <ul id="c-photo-list" class="photos"></ul>
       <p class="hint">「送信する」を 1 回押せば終わりです。電波が無くても、この端末に残して、電波が戻ったら自動で送ります。</p>
