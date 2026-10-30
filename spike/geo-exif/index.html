@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src blob: data:; connect-src 'none'; form-action 'none'; base-uri 'none'">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex, nofollow">
+  <title>試し: 撮影日時と位置の測り</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="exif.js" defer></script>
+  <script src="page.js" defer></script>
+</head>
+<body>
+  <header>
+    <h1>試し: 撮影日時と位置の測り</h1>
+    <p class="banner">測るためだけのページです。何も外へ送らず、何も保存しません。緯度と経度の数は画面に出しません。</p>
+  </header>
+
+  <main>
+    <section aria-labelledby="h-device">
+      <h2 id="h-device">1. 端末</h2>
+      <p class="note">ページが読んだ値です。当てにならないことがあるので、端末の設定画面で見た値も結果の表に書いてください。</p>
+      <pre id="device"></pre>
+    </section>
+
+    <section aria-labelledby="h-photos">
+      <h2 id="h-photos">2. 写真の撮影日時</h2>
+      <div class="field">
+        <label for="route">これから選ぶ道</label>
+        <select id="route">
+          <option value="未記入">(選んでください)</option>
+          <option value="カメラで撮る">カメラで撮る</option>
+          <option value="写真ライブラリ">写真ライブラリ</option>
+          <option value="ファイル">ファイル</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="opt-location">iPhone の「オプション」の位置情報</label>
+        <select id="opt-location">
+          <option value="表示なし・分からない">表示なし・分からない</option>
+          <option value="含める">含める(オン)</option>
+          <option value="含めない">含めない(オフ)</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="opt-format">iPhone の「オプション」の形式</label>
+        <select id="opt-format">
+          <option value="表示なし・分からない">表示なし・分からない</option>
+          <option value="自動">自動</option>
+          <option value="互換性優先">互換性優先</option>
+          <option value="現在の形式">現在の形式</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="photos">写真を選ぶ(送る画面と同じ形)</label>
+        <input type="file" id="photos" accept="image/*,application/pdf" multiple>
+      </div>
+      <p id="photo-status" class="status" role="status" aria-live="polite"></p>
+      <div class="table-wrap">
+        <table id="photo-table">
+          <thead>
+            <tr><th>#</th><th>選んだ道</th><th>オプション</th><th>名前</th><th>type</th><th>大きさ</th><th>lastModified</th><th>形式</th><th>撮影日時</th><th>EXIF の位置</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section aria-labelledby="h-geo">
+      <h2 id="h-geo">3. 位置の取れ方</h2>
+      <div class="field">
+        <label for="place">測る場所</label>
+        <select id="place">
+          <option value="未記入">(選んでください)</option>
+          <option value="屋外">屋外</option>
+          <option value="屋内">屋内</option>
+        </select>
+      </div>
+      <p class="note">取り方の指定: <code id="geo-options"></code></p>
+      <button type="button" id="geo-start">位置を取り始める(60 秒)</button>
+      <p id="geo-status" class="status" role="status" aria-live="polite"></p>
+      <div class="table-wrap">
+        <table id="geo-table">
+          <thead>
+            <tr><th>秒</th><th>時計の秒</th><th>誤差の半径 m</th><th>この秒に取れたか</th><th>値は何秒前</th><th>止まった理由</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section aria-labelledby="h-copy">
+      <h2 id="h-copy">4. 結果を秘書へ</h2>
+      <button type="button" id="copy">結果をコピー</button>
+      <p id="copy-status" class="status" role="status" aria-live="polite"></p>
+      <label for="result-text" class="note">コピーした文字(コピーが効かないときは、ここを長押しして全部を選んでコピー)</label>
+      <textarea id="result-text" rows="8" readonly></textarea>
+    </section>
+  </main>
+</body>
+</html>
