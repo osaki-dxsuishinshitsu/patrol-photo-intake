@@ -56,7 +56,9 @@
       { code: 'P-11', dept: 'B-5' },
       { code: 'P-12', dept: 'B-5' },
       { code: 'P-13', dept: 'B-6' },
-      { code: 'P-14', dept: 'B-6' }
+      { code: 'P-14', dept: 'B-6' },
+      { code: 'P-15', dept: 'B-3' },
+      { code: 'P-16', dept: 'B-3' }
     ]
   };
 
