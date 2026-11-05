@@ -104,7 +104,8 @@
   function describe(code, state) {
     var c = String(code || '');
     var field = c.indexOf('bad_field:') === 0 ? c.slice(10) : '';
-    var names = { date: '実施日', site: '現場', dept: '部署', company: '会社名', role: '立場', name: '氏名', members: '実施した会社', ref: '控え番号', created: '作成日時', device: '端末の印' };
+    var names = { date: '実施日', site: '現場', dept: '部署', company: '会社名', role: '立場', name: '氏名', members: '実施した会社', ref: '控え番号', created: '作成日時', device: '端末の印',
+      loc: '送った場所', staff_role: '社員の立場', unlisted: '一覧に無い会社' };
     var d = {
       too_large: ['送る量が大きすぎて受け付けられませんでした。', '写真の枚数を減らして、はじめから入れ直してください。'],
       photo_size: ['写真・PDF が大きすぎて受け付けられませんでした。', '写真・PDF の件数を減らすか、撮り直す・小さく作り直して、はじめから入れ直してください。'],

@@ -30,10 +30,11 @@
   }
   // ページと受付との取り決めの版(受付の PROTOCOL と同じ)
   var PROTOCOL = 1;
-  // このページが作る本文の書式の版(写真ごとのコメント = v3。仕様 D63)。書式を作るこのコードが版を持つ。
+  // このページが作る本文の書式の版(写真ごとのコメント = v3。仕様 D63。送った場所・社員の立場・一覧に無い会社 = v4。
+  // 仕様 job-20261102-001 D134)。書式を作るこのコードが版を持つ。
   // config.js の formVersion(2)は変えない: Pages のキャッシュで古い app.js が新しい config.js を読んでも、
-  // 古い app.js はコメントの無い v2 を送り続けられるように(仕様 D64)
-  var FORM_VERSION = 3;
+  // 古い app.js は自分の版の中身を送り続けられるように(仕様 D64)
+  var FORM_VERSION = 4;
   // 写真ごとのコメントの長さの上限(前後の空白を除いたコードポイントの数。受付と同じ。仕様 D61)
   var MAX_COMMENT = 100;
   // 1 通で選べる会社の上限(受付・受け側の流れと同じ)
@@ -42,6 +43,8 @@
   var MAX_NAME = 30;
   // 書式 v2 の立場(受け側の流れの式 H と同じ)
   var ROLES_V2 = ['代表者', '安全衛生責任者', 'その他'];
+  // 書式 v4 の社員の立場の語(受付の STAFF_ROLES・流れの式 C4 と同じ 4 つ・同じ順。仕様 job-20261102-001 D134)
+  var STAFF_ROLES_V4 = ['担当・補助', '安全部', '幹部', 'その他'];
   // 写真の縮小(長い辺の画素数と JPEG の品質)。紙の文字が読める大きさを残し、電波が弱くても送れる量にする
   var MAX_SIDE = 1600;
   var JPEG_QUALITY = 0.8;
@@ -82,12 +85,35 @@
     return null;
   }
 
-  // その現場の会社名(roster の並び順・重複なし)
+  // 受付から受け取った・端末に覚えたその現場の一覧(仕様 job-20261102-001 D137)。無ければ null
+  function siteList(config, siteCode) {
+    var l = config.siteLists && Object.prototype.hasOwnProperty.call(config.siteLists, siteCode) ? config.siteLists[siteCode] : null;
+    return l && Array.isArray(l.roster) && Array.isArray(l.targets) ? l : null;
+  }
+
+  // 同梱の roster.js にその現場の行があるか
+  function bundledHas(config, siteCode) {
+    return (config.roster || []).some(function (r) { return r.site === siteCode; });
+  }
+
+  // その現場の会社の一覧が分かっているか(受け取った・覚えた・同梱のどれか)
+  function listKnown(config, siteCode) {
+    return !!siteList(config, siteCode) || bundledHas(config, siteCode);
+  }
+
+  // その現場の会社名(一覧の並び順・重複なし)。受け取った一覧があればそれ(協力会社だけ)、無ければ同梱の roster。
+  // 自社は一覧に頼らない(一覧が無くても「自分が実施」が今と同じに使える。仕様 D137)
   function companiesForSite(config, siteCode) {
     var out = [];
-    (config.roster || []).forEach(function (r) {
-      if (r.site === siteCode && out.indexOf(r.company) === -1) out.push(r.company);
-    });
+    var l = siteList(config, siteCode);
+    if (l) {
+      l.roster.forEach(function (c) { if (out.indexOf(c) === -1) out.push(c); });
+    } else {
+      (config.roster || []).forEach(function (r) {
+        if (r.site === siteCode && out.indexOf(r.company) === -1) out.push(r.company);
+      });
+    }
+    if (config.ownCompany && out.indexOf(config.ownCompany) === -1) out.unshift(config.ownCompany);
     return out;
   }
 
@@ -161,7 +187,8 @@
     return [{ company: config.ownCompany, role: config.otherRole, name: String(name || '') }];
   }
 
-  // 社員が自分の分を送るときの氏名 = 立場の語 + 半角の空白 + 氏名(試用の間の仮。送る中身の形と版は変えない。仕様 D118)。
+  // 社員が自分の分を送るときの氏名 = 立場の語 + 半角の空白 + 氏名(仕様 D118)。v4 では立場の語を staff_role としても送るので、
+  // 語は書式の一部(STAFF_ROLES_V4。変えるときは受付・ページ・流れの式 C4 を同じ便で直す。仕様 job-20261102-001 D134)。
   // 氏名が空なら空(立場の語だけで送らせない)
   function staffName(token, name) {
     var n = String(name || '').trim();
@@ -179,14 +206,15 @@
     return hit ? hit.label : '';
   }
 
-  // 選ばれた実施者をその現場の一覧の並び順にそろえ、重複(同じ会社)と一覧外を落とす
-  // member = { company, role, name }(name は立場が「その他」のときだけ使う)
+  // 選ばれた実施者をその現場の一覧の並び順にそろえ、重複(同じ会社)と一覧外を落とす。
+  // 一覧に無い会社(unlisted: true の 1 つ目)は最後に足す(会社名は前後の空白を除く。仕様 job-20261102-001 D136)
+  // member = { company, role, name[, unlisted] }(name は立場が「その他」のときだけ使う)
   function normalizeMembers(config, siteCode, list) {
     var picked = list || [];
     var out = [];
     companiesForSite(config, siteCode).forEach(function (c) {
       for (var i = 0; i < picked.length; i++) {
-        if (picked[i] && picked[i].company === c) {
+        if (picked[i] && !picked[i].unlisted && picked[i].company === c) {
           var role = picked[i].role || '';
           var name = role === config.otherRole ? String(picked[i].name || '').trim() : '';
           out.push({ company: c, role: role, name: name });
@@ -194,7 +222,48 @@
         }
       }
     });
+    for (var j = 0; j < picked.length; j++) {
+      if (picked[j] && picked[j].unlisted) {
+        var r2 = picked[j].role || '';
+        out.push({ company: String(picked[j].company || '').trim(), role: r2, name: r2 === config.otherRole ? String(picked[j].name || '').trim() : '', unlisted: true });
+        break;
+      }
+    }
     return out;
+  }
+
+  // 会社名を比べる形(全角を半角にそろえ、空白をすべて除く。「(株)」と「（株）」を同じに見る。仕様 D136)
+  function squashName(v) {
+    return nfkc(v).replace(/\s+/g, '');
+  }
+
+  // 一覧に無い会社の会社名の使えない書き方。戻り値 = null / 'empty' / 'length' / 'char' / 'head' / 'listed' / 'own'(仕様 D136)
+  function unlistedProblem(config, siteCode, raw) {
+    var c = String(raw || '').trim();
+    if (!c) return 'empty';
+    if (c.length > 60) return 'length';
+    if (/^[=+\-@]/.test(nfkc(c))) return 'head';
+    if (/[;|=]/.test(c) || /[;|=]/.test(nfkc(c)) || BAD_CHAR_RE.test(c) || /\p{Cs}/u.test(c) || bracketInName(c) || looksLikeLink(c)) return 'char';
+    var key = squashName(c);
+    if (key === squashName(config.ownCompany || '') || (config.ownCompanyLabel && key === squashName(config.ownCompanyLabel))) return 'own';
+    if (visibleCompanies(config, siteCode).some(function (x) { return squashName(x) === key; })) return 'listed';
+    return null;
+  }
+
+  // 画面に出す理由(仕様の「画面の文言」)
+  function unlistedMessage(config, siteCode, raw) {
+    var k = unlistedProblem(config, siteCode, raw);
+    var c = String(raw || '').trim();
+    if (k === 'empty') return '「一覧に無い会社」の会社名を書いてください';
+    if (k === 'length') return '会社名は 60 字までにしてください';
+    if (k === 'char') return '会社名に、使えない字があります(; | = [ ] ［ ］、改行、見えない字、URL の形)';
+    if (k === 'head') return '会社名の先頭に = + - @ は使えません';
+    if (k === 'listed') {
+      var hit = visibleCompanies(config, siteCode).filter(function (x) { return squashName(x) === squashName(c); })[0];
+      return '「' + hit + '」は一覧にあります。一覧から選んでください';
+    }
+    if (k === 'own') return displayCompany(config, config.ownCompany) + 'の分は、最初の画面で「社員」を選んで送ってください';
+    return null;
   }
 
   // 氏名(立場が「その他」のとき): 1〜30 文字、本文の区切り(; | =)・制御文字・見えない書式の文字・URL の形は不可、先頭の = + - @ も不可
@@ -234,13 +303,18 @@
     return /[\[\]［］]/.test(nfkc(c));
   }
 
-  // その写真で選べる会社 = 自社の文字(先頭)+ その現場の一覧の会社(一覧の並び)。
-  // その現場の一覧が無いときは空(選ぶ欄を出さない。仕様 D79)
+  // その写真で選べる会社 = 自社の文字(先頭)+ その現場の一覧の会社(一覧の並び)。受け取った一覧があればその targets、
+  // 無ければ同梱の targets.js。その現場の一覧が無いときは空(選ぶ欄を出さない。仕様 D79・job-20261102-001 D137)
   function targetsForSite(config, siteCode) {
     var out = [];
-    (config.targets || []).forEach(function (t) {
-      if (t.site === siteCode && t.company !== config.ownCompany && out.indexOf(t.company) === -1) out.push(t.company);
-    });
+    var l = siteList(config, siteCode);
+    if (l) {
+      l.targets.forEach(function (c) { if (c !== config.ownCompany && out.indexOf(c) === -1) out.push(c); });
+    } else {
+      (config.targets || []).forEach(function (t) {
+        if (t.site === siteCode && t.company !== config.ownCompany && out.indexOf(t.company) === -1) out.push(t.company);
+      });
+    }
     return out.length ? [config.ownCompany].concat(out) : [];
   }
 
@@ -329,8 +403,14 @@
     } else if (members.length > MAX_COMPANIES) {
       errors.push({ field: 'companies', message: '会社は ' + MAX_COMPANIES + ' 社までにしてください' });
     }
+    // 一覧に無い会社(仕様 job-20261102-001 D136)。「自分が実施」には出さない
     members.forEach(function (m) {
-      var shown = displayCompany(config, m.company);
+      if (!m.unlisted) return;
+      var um = s.who === 'self' ? '「自分が実施」では一覧に無い会社は選べません' : unlistedMessage(config, s.site, m.company);
+      if (um) errors.push({ field: 'unlisted', message: um });
+    });
+    members.forEach(function (m) {
+      var shown = m.unlisted ? (m.company || '一覧に無い会社') : displayCompany(config, m.company);
       // 社員の自分の分の氏名は、頭に立場の語が付いた形で数える(仕様 D118)
       var withRole = s.who === 'self' && m.company === config.ownCompany && s.staffRole;
       if ((config.roles || []).indexOf(m.role) === -1) {
@@ -420,10 +500,174 @@
     return null;
   }
 
-  // 受付へ送る中身(仕様 D21 の JSON。v3 で comments を足した。仕様 D63)。件名・本文・宛先は受付が決める。
-  // comments は写真の順に、写真と同じ数(空のコメントは空の文字列)
-  function buildPayload(state, config, meta, photos, device) {
+  /* ---- 送った場所(仕様 job-20261102-001 D135) ---- */
+
+  // 位置の取り方の指定(版 4 の前の試しのページ job-20261030-001 と同じ)と、送信のときに値を待つ長さ(spike-result.md A2)
+  var LOC_OPTIONS = { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 };
+  var LOC_WAIT_MS = 3000;
+  var LOC_MAX_INT = 99999;
+
+  function clampInt(v) {
+    var n = Math.round(v);
+    return n >= 0 ? Math.min(n, LOC_MAX_INT) : 0;
+  }
+
+  // 1 つの報告の位置。geo = navigator.geolocation(無ければ null)。
+  // 「確認へ」で start、送信で settle、保存した後・入力を最初に戻すときに stop(値を捨てる)。
+  // permissions.query は使わない(iPhone で denied と読めても取れた。spike-result.md I2)
+  function createLocator(geo) {
+    var watchId = null;
+    var started = false;
+    var stopped = false;
+    var fix = null;        // この報告の取り始めの後に届いた一番新しい値 { lat, lng, acc, ts }
+    var denied = false;    // PERMISSION_DENIED を受けた
+    var lastErr = '';      // 'unavailable' / 'timeout'(最後に受けたもの)
+    var unsupported = false;
+    var waiters = [];
+
+    function notify() {
+      var w = waiters;
+      waiters = [];
+      w.forEach(function (f) { f(); });
+    }
+    function onPos(p) {
+      if (stopped) return;
+      var c = p && p.coords;
+      // 空(null・undefined)は 0 にせず、無い値として扱う
+      var num = function (v) { return v == null || v === '' ? NaN : Number(v); };
+      var lat = c ? num(c.latitude) : NaN;
+      var lng = c ? num(c.longitude) : NaN;
+      var acc = c ? num(c.accuracy) : NaN;
+      var ts = p ? num(p.timestamp) : NaN;
+      // 有限の数でない・範囲の外の値は届かなかったものとして扱う(受付で final にならないように)
+      if (!isFinite(lat) || !isFinite(lng) || !isFinite(acc) || !isFinite(ts) || Math.abs(lat) > 90 || Math.abs(lng) > 180 || acc < 0) {
+        lastErr = 'unavailable';
+      } else {
+        fix = { lat: lat, lng: lng, acc: acc, ts: ts };
+      }
+      notify();
+    }
+    function onErr(e) {
+      if (stopped) return;
+      var code = e && e.code;
+      if (code === 1) denied = true;
+      else lastErr = code === 2 ? 'unavailable' : 'timeout';
+      notify();
+    }
+    function ready() {
+      return !!fix || denied || unsupported;
+    }
+    // 送る中身の loc(送信を押した時刻 pressedAt から何秒前かを数える。負は 0)
+    function result(pressedAt) {
+      if (fix) {
+        return { st: 'ok', lat: fix.lat.toFixed(6), lng: fix.lng.toFixed(6), acc: clampInt(fix.acc), age: clampInt((pressedAt - fix.ts) / 1000) };
+      }
+      if (unsupported) return { st: 'unsupported' };
+      if (denied) return { st: 'denied' };
+      return { st: lastErr === 'unavailable' ? 'unavailable' : 'timeout' };
+    }
+    return {
+      start: function () {
+        if (started || stopped) return;
+        started = true;
+        if (!geo || typeof geo.watchPosition !== 'function') { unsupported = true; return; }
+        try {
+          watchId = geo.watchPosition(onPos, onErr, LOC_OPTIONS);
+        } catch (e) {
+          unsupported = true;
+        }
+      },
+      stop: function () {
+        stopped = true;
+        if (watchId !== null && geo && typeof geo.clearWatch === 'function') {
+          try { geo.clearWatch(watchId); } catch (e) { /* 止められなくても値は使わない */ }
+        }
+        watchId = null;
+        fix = null;
+        notify();
+      },
+      ready: ready,
+      result: result,
+      // 残っている待ちの数(試験で、打ち切った待ちが溜まらないことを見る。handoff 91069f62 codex-1)
+      waiting: function () { return waiters.length; },
+      // 送信のとき: 値がある・断りが来ている・非対応ならすぐ。それ以外は waitMs まで別の時計で待ち、
+      // 値が届いた・断られた・ページが隠れた(hide.on に渡した関数が呼ばれた)ときは、その出来事の中で待ちをやめる。
+      // timers = { set(fn, ms) → id, clear(id) }・hide = { on(fn), off(fn) }
+      settle: function (pressedAt, waitMs, timers, hide) {
+        return new Promise(function (resolve) {
+          if (ready() || stopped) { resolve(result(pressedAt)); return; }
+          var done = false;
+          var t = null;
+          function finish() {
+            if (done) return;
+            done = true;
+            if (t !== null) timers.clear(t);
+            if (hide) hide.off(finish);
+            // 待ちの関数を外す(位置の通知が来ないまま打ち切りが重なっても、済んだ待ちを溜めない。handoff 91069f62 codex-1)
+            var at = waiters.indexOf(check);
+            if (at !== -1) waiters.splice(at, 1);
+            resolve(result(pressedAt));
+          }
+          t = timers.set(finish, waitMs);
+          if (hide) hide.on(finish);
+          function check() {
+            if (done) return;
+            if (ready() || stopped) finish(); else waiters.push(check);
+          }
+          waiters.push(check);
+        });
+      }
+    };
+  }
+
+  /* ---- 会社の一覧を受付から受け取る(仕様 job-20261102-001 D137) ---- */
+
+  var LIST_KEY_RE = /^[A-Za-z0-9_-]{22,64}$/;
+
+  // 受付の一覧の口の URL(鍵は現場の QR で開いたその現場のときだけ付ける)
+  function listUrl(config, siteCode, key) {
+    return config.endpoint + '?op=companies&site=' + encodeURIComponent(siteCode) + (key && LIST_KEY_RE.test(key) ? '&k=' + encodeURIComponent(key) : '');
+  }
+
+  // 一覧の会社名の決まり(同梱の roster.js・targets.js と同じ)。合わなければ false
+  function okListNames(config, list, forTargets) {
+    if (!Array.isArray(list) || list.length > 200) return false;
+    var seen = {};
+    for (var i = 0; i < list.length; i++) {
+      var c = list[i];
+      if (badCompanyText(c) || bracketInName(c) || c === config.ownCompany || seen['$' + c]) return false;
+      if (forTargets && commentProblem(pickMarker(c))) return false;
+      seen['$' + c] = true;
+    }
+    return true;
+  }
+
+  // 受付の応答・端末の覚えを一覧として使えるか確かめる。使えるなら { roster, targets }、使えなければ null。
+  // 応答の site が siteCode と同じときだけ(遅れて届いた別の現場の一覧を当てない)
+  function parseList(config, siteCode, res) {
+    if (!res || res.ok !== true || res.site !== siteCode) return null;
+    if (!okListNames(config, res.roster, false) || !okListNames(config, res.targets, true)) return null;
+    return { roster: res.roster.slice(), targets: res.targets.slice() };
+  }
+
+  // 届いた一覧を当てても、画面に出る会社(会社の欄・写真ごとの会社の欄)が今と変わらないか
+  // (同じなら欄を作り直さない = 入力中の欄からフォーカスを外さない。handoff 91069f62 send-2)
+  function sameShownList(config, siteCode, list) {
+    // listKnown も比べる(空の一覧が届いて「一覧が分かった」に変わると、協力会社が無い案内を出すため作り直す)
+    var before = JSON.stringify([companiesForSite(config, siteCode), targetsForSite(config, siteCode), listKnown(config, siteCode)]);
+    var lists = {};
+    Object.keys(config.siteLists || {}).forEach(function (k) { lists[k] = config.siteLists[k]; });
+    lists[siteCode] = list;
+    var next = Object.assign({}, config, { siteLists: lists });
+    return before === JSON.stringify([companiesForSite(next, siteCode), targetsForSite(next, siteCode), listKnown(next, siteCode)]);
+  }
+
+  // 受付へ送る中身(仕様 D21 の JSON。v3 で comments を足した。仕様 D63。v4 で loc・staffRole・unlisted を足した。
+  // 仕様 job-20261102-001 D134)。件名・本文・宛先は受付が決める。
+  // comments は写真の順に、写真と同じ数(空のコメントは空の文字列)。loc = createLocator の result(保存の前に固める)
+  function buildPayload(state, config, meta, photos, device, loc) {
     var comments = state.photoComments || [];
+    var members = normalizeMembers(config, state.site, state.members);
     return {
       p: PROTOCOL,
       formId: config.formId,
@@ -432,13 +676,17 @@
       date: state.date,
       dept: state.dept,
       site: state.site,
-      members: normalizeMembers(config, state.site, state.members).map(function (m) {
+      members: members.map(function (m) {
         return m.role === config.otherRole ? { company: m.company, role: m.role, name: m.name } : { company: m.company, role: m.role };
       }),
       created: meta.created,
       device: device,
       photos: photos.map(function (p) { return { type: p.type, data: p.data }; }),
-      comments: photos.map(function (p, i) { return cleanComment(comments[i]); })
+      comments: photos.map(function (p, i) { return cleanComment(comments[i]); }),
+      loc: loc || { st: 'unsupported' },
+      // 社員の立場の語(社員の道だけ。協力会社の方は空)
+      staffRole: (state.who === 'self' || state.who === 'paper') ? (state.staffRole || '') : '',
+      unlisted: members.filter(function (m) { return m.unlisted; }).map(function (m) { return m.company; })
     };
   }
 
@@ -482,6 +730,8 @@
           }
           if (r && typeof r.token === 'string') seenRoles['$' + r.token] = true;
         });
+        // 立場の語は書式 v4 の一部(受付は決まった 4 語と照らす)。並びまで同じでなければ止める(ROLES_V2 と同じ型。handoff 91069f62 send-4)
+        if (JSON.stringify(config.staffRoles.map(function (r) { return r && r.token; })) !== JSON.stringify(STAFF_ROLES_V4)) problems.push('staffRoles:v4');
       }
     }
     (config.roster || []).forEach(function (r, i) {
@@ -493,9 +743,11 @@
     if (!(config.roster || []).length) problems.push('roster');
     // 立場は本文の書式(版)の一部。受け側の流れと同じ 3 つ・同じ順でなければ止める(変えるときは版を上げる)
     if (JSON.stringify(config.roles) !== JSON.stringify(ROLES_V2) || config.otherRole !== ROLES_V2[2]) problems.push('roles');
-    // どの現場にも自社の行があること(仕様 D52)。自社以外の会社が 0 社の現場は誤りにしない(協力会社の道では選べない。仕様 D71・D117)
+    // 同梱の roster に行がある現場には自社の行があること(仕様 D52)。自社以外の会社が 0 社の現場は誤りにしない
+    // (協力会社の道では選べない。仕様 D71・D117)。同梱に行の無い現場(受付から一覧を受け取る現場)は見ない(仕様 job-20261102-001 D137)
     (config.sites || []).forEach(function (s) {
-      if (companiesForSite(config, s.code).indexOf(config.ownCompany) === -1) problems.push('roster-own:' + s.code);
+      var rows = (config.roster || []).filter(function (r) { return r.site === s.code; });
+      if (rows.length && !rows.some(function (r) { return r.company === config.ownCompany; })) problems.push('roster-own:' + s.code);
     });
     // 写真ごとに選べる会社の一覧(仕様 D79)。ファイルが無いときは選ぶ欄を出さないだけ(誤りにしない)
     var seenTargets = {};
@@ -539,6 +791,17 @@
     freeTextProblem: freeTextProblem,
     photoCommentMessage: photoCommentMessage,
     targetsForSite: targetsForSite,
+    siteList: siteList,
+    listKnown: listKnown,
+    unlistedProblem: unlistedProblem,
+    unlistedMessage: unlistedMessage,
+    createLocator: createLocator,
+    LOC_WAIT_MS: LOC_WAIT_MS,
+    listUrl: listUrl,
+    parseList: parseList,
+    sameShownList: sameShownList,
+    STAFF_ROLES_V4: STAFF_ROLES_V4,
+    LIST_KEY_RE: LIST_KEY_RE,
     FORM_VERSION: FORM_VERSION,
     MAX_COMMENT: MAX_COMMENT,
     validate: validate,
@@ -563,7 +826,18 @@
   config.roster = root.PATROL_ROSTER || [];
   // 写真ごとに選べる会社の一覧(targets.js)。無い・読めないときは選ぶ欄を出さない(仕様 D79)
   config.targets = Array.isArray(root.PATROL_TARGETS) ? root.PATROL_TARGETS : [];
+  // 受付から受け取った・端末に覚えた現場ごとの会社の一覧(仕様 job-20261102-001 D137)
+  config.siteLists = {};
   var O = root.PatrolOutbox;
+  // 一覧の受け取りの状態(現場ごと): 'loading' / 'ok' / 'failed'。確認・完了の画面にいる間に届いた一覧は pendingLists に置く
+  var listState = {};
+  var pendingLists = {};
+  var listNote = '';     // 一覧の知らせの欄に出す、選んでいた会社を外したときの文
+  // 現場の QR の鍵(URL の k。受付への問い合わせにだけ使う)= { site, k }
+  var siteKey = null;
+  // この報告の送った場所(「確認へ」で作る。保存した後・入力を最初に戻すときに捨てる。仕様 D135)
+  var locator = null;
+  var sending = false;
 
   // kind = ''(まだ選んでいない)/ 'staff'(社員)/ 'partner'(協力会社の方)。仕様 D117
   // who = 'partner'(協力会社が自分の紙を送る)/ 'paper'(社員が協力会社の紙を代わりに送る)/ 'self'(社員が自分で実施した分)
@@ -640,12 +914,128 @@
     }
   }
 
+  /* ---- 会社の一覧を受付から受け取る(仕様 job-20261102-001 D137) ---- */
+
+  function listCacheKey(code) {
+    return 'patrol-list:' + code;
+  }
+
+  // 端末に覚えた一覧を読む(読めない・決まりに合わないときは使わない)
+  function readListCache(code) {
+    try {
+      var raw = root.localStorage.getItem(listCacheKey(code));
+      if (!raw) return null;
+      var v = JSON.parse(raw);
+      return parseList(config, code, { ok: true, site: code, roster: v && v.roster, targets: v && v.targets });
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function writeListCache(code, list) {
+    try {
+      root.localStorage.setItem(listCacheKey(code), JSON.stringify({ roster: list.roster, targets: list.targets }));
+    } catch (e) { /* 覚えられなくても、この画面では使える */ }
+  }
+
+  function inputShown() {
+    return !$('step-input').hidden;
+  }
+
+  // 届いた一覧を当てる。選んでいた会社が一覧から無くなったら外し、知らせる(黙って外さない)
+  function applyList(code, list) {
+    if (!inputShown()) { pendingLists[code] = list; return; }
+    if (code !== state.site) { config.siteLists[code] = list; return; }
+    // 画面に出る会社が同じなら、覚えるだけで欄を作り直さない(入力中の欄・変換中の文字を守る。handoff 91069f62 send-2)
+    if (sameShownList(config, code, list)) { config.siteLists[code] = list; return; }
+    // 一覧の会社の欄(company-<番号>…)の id は並びの番号なので、作り直した後は別の会社を指しうる。その欄にはフォーカスを戻さない(一覧に無い会社の欄 company-unlisted… は戻す)
+    var focused = doc.activeElement && doc.activeElement.id && !/^company-\d/.test(doc.activeElement.id) ? doc.activeElement.id : '';
+    var before = state.members.filter(function (m) { return !m.unlisted && m.company !== config.ownCompany; }).map(function (m) { return m.company; });
+    config.siteLists[code] = list;
+    var after = normalizeMembers(config, code, state.members).map(function (m) { return m.company; });
+    listNote = before.some(function (c) { return after.indexOf(c) === -1; }) ?
+      '会社の一覧が新しくなり、選んでいた会社のうち一覧に無くなったものを外しました。選び直してください。' : '';
+    resetPicks();
+    renderCompanies();
+    renderPhotos();
+    refresh();
+    // 作り直した後、同じ欄が残っていればフォーカスを戻す(ほかの作り直しと同じ refocus)
+    if (focused) refocus(focused);
+  }
+
+  // 確認・完了の画面にいる間に届いた一覧を、入力の画面に戻ったときに当てる
+  function flushPendingLists() {
+    var codes = Object.keys(pendingLists);
+    codes.forEach(function (code) {
+      var list = pendingLists[code];
+      delete pendingLists[code];
+      applyList(code, list);
+    });
+  }
+
+  // その現場の一覧を受付に 1 回問い合わせる(同じ現場は 1 回の表示の間に 1 回。届かなかったら force で取り直す)
+  function ensureList(code, force) {
+    if (!code || !root.fetch) return;
+    if (!config.siteLists[code]) {
+      var cached = readListCache(code);
+      if (cached) config.siteLists[code] = cached;
+    }
+    if (listState[code] === 'loading' || listState[code] === 'ok' || (listState[code] === 'failed' && !force)) return;
+    listState[code] = 'loading';
+    renderListStatus();
+    var key = siteKey && siteKey.site === code ? siteKey.k : '';
+    var ctrl = typeof root.AbortController === 'function' ? new root.AbortController() : null;
+    var timer = root.setTimeout(function () { if (ctrl) ctrl.abort(); }, 10000);
+    root.fetch(listUrl(config, code, key), {
+      method: 'GET', redirect: 'follow', credentials: 'omit', cache: 'no-store', referrerPolicy: 'no-referrer',
+      signal: ctrl ? ctrl.signal : undefined
+    }).then(function (r) { return r.json(); }).then(function (res) {
+      root.clearTimeout(timer);
+      var list = parseList(config, code, res);
+      if (!list) throw new Error('no_list');
+      listState[code] = 'ok';
+      writeListCache(code, list);
+      applyList(code, list);
+      renderListStatus();
+    }).catch(function () {
+      root.clearTimeout(timer);
+      listState[code] = 'failed';
+      renderListStatus();
+    });
+  }
+
+  // 一覧の知らせの欄(待っている・届かない・選んでいた会社を外した)
+  function renderListStatus() {
+    var box = $('list-status');
+    if (!box) return;
+    var code = state.site;
+    var known = code && listKnown(config, code);
+    var text = listNote ||
+      (code && !known && listState[code] === 'loading' ? '会社の一覧を受け取っています…' :
+        code && !known && listState[code] === 'failed' ? '会社の一覧を受け取れませんでした。一覧に無い会社は、下の「一覧に無い会社」で書けます。' : '');
+    if (box.textContent !== text) box.textContent = text;
+  }
+
+  // 今の現場の一覧に無い写真ごとの会社の選択を「指定なし」に戻す(自由記入は残す。仕様 D78)
+  function resetPicks() {
+    var choices = targetsForSite(config, state.site);
+    var changed = false;
+    photos.forEach(function (p) {
+      if (p.pick && choices.indexOf(p.pick) === -1) { p.pick = ''; changed = true; }
+    });
+    if (changed) $('pick-reset').textContent = '現場が変わったので、写真ごとの会社の選択を「指定なし」に戻したものがあります。写真ごとに確かめてください。';
+  }
+
   function setSite(code) {
     var site = findSite(config, code);
     state.site = site ? site.code : '';
     state.dept = site ? site.dept : '';
     $('site-fixed-code').textContent = site ? site.code : '';
     $('site-fixed-dept').textContent = site ? site.dept : '';
+    listNote = '';
+    // 現場が決まったら、その現場の一覧を受付から受け取る(画面は待たない。仕様 D137)
+    if (state.site) ensureList(state.site, listState[state.site] === 'failed');
+    renderListStatus();
     // 新しい現場の一覧に無い会社の選択は「指定なし」に戻す(自由記入は残す。仕様 D78)
     var choices = targetsForSite(config, state.site);
     var changed = false;
@@ -669,7 +1059,8 @@
   // 選択肢を作り直す。いま選んでいる現場が選択肢から外れたら、未選択に戻す。
   // 協力会社の紙(partner・paper)では、自社以外の会社が 0 社の現場を出さない(会社を選べずに止まるため。仕様 D71)
   function fillSiteOptions(list) {
-    if (state.who === 'partner' || state.who === 'paper') list = list.filter(function (s) { return hasPartners(config, s.code); });
+    // 一覧が分かっていない現場は出す(一覧に無い会社で送れるため。仕様 job-20261102-001 D137)
+    if (state.who === 'partner' || state.who === 'paper') list = list.filter(function (s) { return !listKnown(config, s.code) || hasPartners(config, s.code); });
     var sel = $('site-select');
     sel.textContent = '';
     sel.appendChild(el('option', { value: '' }, '選んでください'));
@@ -736,6 +1127,32 @@
       (entry.shown.length ? '(' + entry.shown.join('、') + (rest > 0 ? ' ほか ' + rest + ' 件' : '') + ')' : '');
   }
 
+  // 鍵は現場の QR(1 現場)で開いたときだけ使う。そのタブの sessionStorage に置き(読み直しても使える)、
+  // URL から k だけを外す(履歴・ホーム画面・共有で広がらないように)
+  function readSiteKey(params) {
+    var k = params.get('k');
+    // URL から k を外すのは、入口の種類にかかわらず(外した現場の古い QR で開いたときも履歴に残さない)
+    if (params.has('k')) {
+      try {
+        params.delete('k');
+        var q = params.toString();
+        root.history.replaceState(null, '', root.location.pathname + (q ? '?' + q : '') + root.location.hash);
+      } catch (e3) { /* 外せなくても動く */ }
+    }
+    if (entry.mode !== 'single') return;
+    var code = entry.codes[0];
+    var skey = 'patrol-key:' + code;
+    if (k && LIST_KEY_RE.test(k)) {
+      siteKey = { site: code, k: k };
+      try { root.sessionStorage.setItem(skey, k); } catch (e) { /* 覚えられなくても、この表示の間は使える */ }
+    } else {
+      try {
+        var kept = root.sessionStorage.getItem(skey);
+        if (kept && LIST_KEY_RE.test(kept)) siteKey = { site: code, k: kept };
+      } catch (e2) { /* 無ければ鍵なしで問い合わせる */ }
+    }
+  }
+
   function renderSiteChoice() {
     var sel = $('site-select');
     sel.addEventListener('change', function () {
@@ -768,9 +1185,11 @@
       if (rechooseFrom) refocus(rechooseFrom);
     });
 
-    // ページが読む URL のパラメータは s だけ(仕様 D48)
-    var parsed = parseSiteParam(config, new URLSearchParams(root.location.search).get('s'));
+    // ページが読む URL のパラメータは s(仕様 D48)と、現場の QR の鍵 k(仕様 job-20261102-001 D137)
+    var params = new URLSearchParams(root.location.search);
+    var parsed = parseSiteParam(config, params.get('s'));
     entry = { mode: entryMode(parsed.codes), codes: parsed.codes, unknown: parsed.unknown, shown: parsed.shown };
+    readSiteKey(params);
     // どの入口でも(現場 QR・社員用リンク・全現場・一覧に無いコードだけ)、最初に「社員」か「協力会社の方」かを選ぶ(仕様 D117。
     // 前の「協力会社 0 社の現場は自分が実施で始める」(D71)と「現場 QR は協力会社の画面で始める」(D52)の入口の違いは無くした)
     state.whoRequired = true;
@@ -865,7 +1284,8 @@
 
   function findMember(company) {
     for (var i = 0; i < state.members.length; i++) {
-      if (state.members[i].company === company) return state.members[i];
+      // 一覧に無い会社の行は、同じ名前の一覧の会社として扱わない
+      if (!state.members[i].unlisted && state.members[i].company === company) return state.members[i];
     }
     return null;
   }
@@ -879,10 +1299,12 @@
       state.members = selfMembersNow();
       return;
     }
-    state.members = normalizeMembers(config, state.site, state.members).filter(function (m) { return m.company !== config.ownCompany; });
+    state.members = normalizeMembers(config, state.site, state.members).filter(function (m) { return m.unlisted || m.company !== config.ownCompany; });
     $('company-empty').hidden = !!state.site;
-    // 協力会社の一覧が無い現場(現場 QR で開いたとき)は、行き止まりにしないで社員の道を案内する(仕様 D117)
-    $('company-none').hidden = !(state.site && !hasPartners(config, state.site));
+    renderListStatus();
+    // 協力会社の一覧が無い現場(現場 QR で開いたとき)は、行き止まりにしないで社員の道を案内する(仕様 D117)。
+    // 一覧がまだ分からない現場は、一覧の知らせの欄で知らせる(仕様 job-20261102-001 D137)
+    $('company-none').hidden = !(state.site && listKnown(config, state.site) && !hasPartners(config, state.site));
     $('company-none').textContent = state.who === 'paper' ?
       'この現場には、選べる協力会社がありません。自分の分を送るときは、上の「選び直す」から「自分のチェックシートを送る」を選んでください。' :
       'この現場には、選べる協力会社がありません。社員の方は、上の「選び直す」から社員を選んでください。';
@@ -897,7 +1319,7 @@
         if (input.checked) {
           state.members.push({ company: c, role: '', name: '' });
         } else {
-          state.members = state.members.filter(function (m) { return m.company !== c; });
+          state.members = state.members.filter(function (m) { return m.unlisted || m.company !== c; });
         }
         renderCompanies();
         refresh();
@@ -907,40 +1329,94 @@
       label.appendChild(el('span', null, c));
       wrap.appendChild(label);
 
-      if (member) {
-        var group = el('fieldset', { 'class': 'roles' });
-        group.appendChild(el('legend', null, c + ' で実施した人の立場'));
-        config.roles.forEach(function (r, j) {
-          var rid = id + '-role-' + j;
-          var rl = el('label', { 'for': rid, 'class': 'check' });
-          var radio = el('input', { type: 'radio', id: rid, name: id + '-role', value: r });
-          radio.checked = member.role === r;
-          radio.addEventListener('change', function () {
-            member.role = r;
-            renderCompanies();
-            refresh();
-            refocus(rid);
-          });
-          rl.appendChild(radio);
-          rl.appendChild(el('span', null, r));
-          group.appendChild(rl);
-        });
-        if (member.role === config.otherRole) {
-          var nid = id + '-name';
-          group.appendChild(el('label', { 'for': nid, 'class': 'name-label' }, '氏名'));
-          var nameInput = el('input', { type: 'text', id: nid, maxlength: String(MAX_NAME), autocomplete: 'name' });
-          nameInput.value = member.name || '';
-          nameInput.addEventListener('input', function () {
-            member.name = nameInput.value;
-            refresh();
-          });
-          group.appendChild(nameInput);
-          group.appendChild(el('p', { 'class': 'hint' }, '氏名はパトロールの実施記録として社内でだけ使います。送り終えるまではこの端末に残り、送り終えたら消えます(「送れません」となった記録は、下の「送信の記録」から消すまで残ります)。'));
-        }
-        wrap.appendChild(group);
-      }
+      if (member) wrap.appendChild(roleGroup(member, id, c));
       box.appendChild(wrap);
     });
+    renderUnlisted(box);
+  }
+
+  // 会社を選ぶと開く、その会社で実施した人の立場の欄(「その他」のときだけ氏名の欄)。一覧の会社と一覧に無い会社で同じ欄
+  function roleGroup(member, id, c) {
+    var group = el('fieldset', { 'class': 'roles' });
+    group.appendChild(el('legend', null, (c || '一覧に無い会社') + ' で実施した人の立場'));
+    config.roles.forEach(function (r, j) {
+      var rid = id + '-role-' + j;
+      var rl = el('label', { 'for': rid, 'class': 'check' });
+      var radio = el('input', { type: 'radio', id: rid, name: id + '-role', value: r });
+      radio.checked = member.role === r;
+      radio.addEventListener('change', function () {
+        member.role = r;
+        renderCompanies();
+        refresh();
+        refocus(rid);
+      });
+      rl.appendChild(radio);
+      rl.appendChild(el('span', null, r));
+      group.appendChild(rl);
+    });
+    if (member.role === config.otherRole) {
+      var nid = id + '-name';
+      group.appendChild(el('label', { 'for': nid, 'class': 'name-label' }, '氏名'));
+      var nameInput = el('input', { type: 'text', id: nid, maxlength: String(MAX_NAME), autocomplete: 'name' });
+      nameInput.value = member.name || '';
+      nameInput.addEventListener('input', function () {
+        member.name = nameInput.value;
+        refresh();
+      });
+      group.appendChild(nameInput);
+      group.appendChild(el('p', { 'class': 'hint' }, '氏名はパトロールの実施記録として社内でだけ使います。送り終えるまではこの端末に残り、送り終えたら消えます(「送れません」となった記録は、下の「送信の記録」から消すまで残ります)。'));
+    }
+    return group;
+  }
+
+  // 一覧に無い会社の入口(1 つの選択肢。選んだときだけ会社名の欄と、その欄の知らせ。仕様 job-20261102-001 D136)
+  function renderUnlisted(box) {
+    if (!state.site) return;
+    var member = null;
+    for (var i = 0; i < state.members.length; i++) if (state.members[i].unlisted) member = state.members[i];
+    var id = 'company-unlisted';
+    var wrap = el('div', { 'class': 'member' });
+    var label = el('label', { 'for': id, 'class': 'check' });
+    var input = el('input', { type: 'checkbox', id: id, value: '' });
+    input.checked = !!member;
+    input.addEventListener('change', function () {
+      if (input.checked) {
+        state.members.push({ company: '', role: '', name: '', unlisted: true });
+      } else {
+        state.members = state.members.filter(function (m) { return !m.unlisted; });
+      }
+      renderCompanies();
+      refresh();
+      refocus(input.checked ? id + '-company' : id);
+    });
+    label.appendChild(input);
+    label.appendChild(el('span', null, '一覧に無い会社'));
+    wrap.appendChild(label);
+    if (member) {
+      var cid = id + '-company';
+      var err = el('p', { id: cid + '-error', 'class': 'error comment-error', 'aria-live': 'polite' });
+      // ラベルと欄の下の説明は spec の「画面の文言(逐語)」のとおりに分ける(handoff 91069f62 send-5)。
+      // 説明は氏名の欄の説明と同じ hint の段落(count-ui の知らせに 1 つ数える。AC-10)
+      wrap.appendChild(el('label', { 'for': cid, 'class': 'name-label' }, '会社名(一覧に無い会社)'));
+      var nameInput = el('input', { type: 'text', id: cid, maxlength: '60', autocomplete: 'organization', 'aria-describedby': cid + '-note ' + cid + '-error' });
+      nameInput.value = member.company || '';
+      var showErr = function () {
+        var m = unlistedMessage(config, state.site, member.company) || '';
+        if (err.textContent !== m) err.textContent = m;
+        nameInput.setAttribute('aria-invalid', m ? 'true' : 'false');
+      };
+      nameInput.addEventListener('input', function () {
+        member.company = nameInput.value;
+        showErr();
+        refresh();
+      });
+      wrap.appendChild(nameInput);
+      wrap.appendChild(el('p', { id: cid + '-note', 'class': 'hint' }, '一覧に無い会社は、確認担当が確かめてから数えます。'));
+      wrap.appendChild(err);
+      showErr();
+      wrap.appendChild(roleGroup(member, id, ''));
+    }
+    box.appendChild(wrap);
   }
 
   function renderPhotos() {
@@ -1027,7 +1503,7 @@
 
   function membersText(members) {
     return members.map(function (m) {
-      return displayCompany(config, m.company) + '(' + m.role + (m.role === config.otherRole ? ': ' + m.name : '') + ')';
+      return displayCompany(config, m.company) + (m.unlisted ? '(一覧に無い会社)' : '') + '(' + m.role + (m.role === config.otherRole ? ': ' + m.name : '') + ')';
     }).join('、');
   }
 
@@ -1041,7 +1517,7 @@
       var name = self ? String(selfName || '').trim() : m.name;
       // 会社・立場・氏名を 1 行ずつ(途中で折れて読みにくくならないように)
       var li = el('li');
-      li.appendChild(el('span', { 'class': 'who-line' }, '会社 ' + displayCompany(config, m.company)));
+      li.appendChild(el('span', { 'class': 'who-line' }, '会社 ' + displayCompany(config, m.company) + (m.unlisted ? '(一覧に無い会社)' : '')));
       li.appendChild(el('span', { 'class': 'who-line' }, '立場 ' + role));
       if (name) li.appendChild(el('span', { 'class': 'who-line' }, '氏名 ' + name));
       whoList.appendChild(li);
@@ -1306,9 +1782,23 @@
     }
   }
 
+  // 送信の待ちの間にページが隠れたら、その出来事の中で待ちをやめる(仕様 job-20261102-001 D135)
+  var hideSource = {
+    fns: [],
+    on: function (fn) { this.fns.push(fn); },
+    off: function (fn) { this.fns = this.fns.filter(function (f) { return f !== fn; }); },
+    fire: function () { this.fns.slice().forEach(function (f) { f(); }); }
+  };
+  var locTimers = {
+    set: function (fn, ms) { return root.setTimeout(fn, ms); },
+    clear: function (id) { root.clearTimeout(id); }
+  };
+
   function send() {
+    if (sending) return;
     if (validate(state, config).length) {
       show('step-input');
+      flushPendingLists();
       refresh();
       return;
     }
@@ -1319,38 +1809,49 @@
       $('prep-error').textContent = '送信の準備中です。数秒待ってから、もう一度押してください。';
       return;
     }
+    sending = true;
     btn.disabled = true;
-    btn.textContent = 'この端末に保存しています…';
     $('back').disabled = true; // 保存の途中で入力の画面に戻らない
-    var members = normalizeMembers(config, state.site, state.members);
-    var rec = {
-      id: meta.ref,
-      createdAt: Date.now(),
-      summary: { date: state.date, site: state.site, companies: members.length, photos: ready.length },
-      payload: buildPayload(state, config, meta, ready, deviceId())
-    };
-    outbox.add(rec).then(function (r) {
-      if (r.error) {
-        var d = O.describe(r.error);
-        $('prep-error').hidden = false;
-        $('prep-error').textContent = d.what + ' ' + d.fix;
-        btn.disabled = false;
-        btn.textContent = '送信する';
-        $('back').disabled = false;
-        return;
-      }
-      currentRef = rec.id;
-      $('back').disabled = false;
-      $('d-storage').hidden = r.saved;
-      show('step-done');
-      renderOutbox();
-      auto.run(true, rec.id);
-    }).catch(function () {
+    var pressedAt = Date.now();
+    if (!locator) { locator = createLocator(root.navigator && root.navigator.geolocation); locator.start(); }
+    // 位置の値がまだ無いときだけ、別の時計で短く待つ(待つ間は送信ボタンの文言で知らせる)
+    btn.textContent = locator.ready() ? 'この端末に保存しています…' : '位置を確かめています…';
+    function failed(text) {
+      sending = false;
       $('prep-error').hidden = false;
-      $('prep-error').textContent = '送信できませんでした。もう一度「送信する」を押してください。';
+      $('prep-error').textContent = text;
       btn.disabled = false;
       btn.textContent = '送信する';
       $('back').disabled = false;
+    }
+    locator.settle(pressedAt, LOC_WAIT_MS, locTimers, hideSource).then(function (where) {
+      btn.textContent = 'この端末に保存しています…';
+      var members = normalizeMembers(config, state.site, state.members);
+      // 位置は保存の前に中身に固める(保存した後に書き足さない。送り直しも同じ中身)
+      var rec = {
+        id: meta.ref,
+        createdAt: Date.now(),
+        summary: { date: state.date, site: state.site, companies: members.length, photos: ready.length },
+        payload: buildPayload(state, config, meta, ready, deviceId(), where)
+      };
+      return outbox.add(rec).then(function (r) {
+        if (r.error) {
+          var d = O.describe(r.error);
+          failed(d.what + ' ' + d.fix);
+          return;
+        }
+        sending = false;
+        // この報告の位置は使い終わった(次の報告で使わない)
+        if (locator) { locator.stop(); locator = null; }
+        currentRef = rec.id;
+        $('back').disabled = false;
+        $('d-storage').hidden = r.saved;
+        show('step-done');
+        renderOutbox();
+        auto.run(true, rec.id);
+      });
+    }).catch(function () {
+      failed('送信できませんでした。もう一度「送信する」を押してください。');
     });
   }
 
@@ -1414,6 +1915,9 @@
   // 入力だけを最初に戻す(ページを読み直さない = 送っている途中の送信や、端末に残せなかった送信を消さない)
   function resetForm() {
     prepToken++;
+    // 前の報告の位置は使わない(仕様 job-20261102-001 D135)
+    if (locator) { locator.stop(); locator = null; }
+    listNote = '';
     photos.forEach(function (p) { root.URL.revokeObjectURL(p.url); });
     photos = [];
     ready = null;
@@ -1446,6 +1950,7 @@
     renderPhotos();
     refresh();
     show('step-input');
+    flushPendingLists();
   }
 
   // LINE などのアプリの中のブラウザは、送れなかったものの置き場が普段のブラウザと別で、閉じると消えることがある
@@ -1471,6 +1976,10 @@
         refresh();
       });
     });
+
+    // 一覧の知らせの欄(会社の欄の上。index.html は変えない。仕様 job-20261102-001 D137)
+    var listBox = el('p', { id: 'list-status', 'class': 'hint', 'aria-live': 'polite' });
+    $('company-list').parentNode.insertBefore(listBox, $('company-list'));
 
     initWho();
     renderSiteChoice();
@@ -1500,6 +2009,11 @@
     $('to-confirm').addEventListener('click', function () {
       if (refresh().length) return;
       meta = { ref: newRef(), created: isoWithOffset(new Date()) };
+      // 送った場所はここで取り始める(この報告で 1 回。「戻って直す」で戻っても止めない。仕様 job-20261102-001 D135)
+      if (!locator) {
+        locator = createLocator(root.navigator && root.navigator.geolocation);
+        locator.start();
+      }
       renderConfirm();
       show('step-confirm');
       preparePhotos();
@@ -1508,6 +2022,16 @@
       prepToken++; // 写真の準備を途中でやめる
       ready = null;
       show('step-input');
+      flushPendingLists();
+    });
+    // 送信の待ちの間にページが隠れたら待ちをやめる・届かなかった一覧は電波が戻ったら取り直す(仕様 D135・D137)
+    doc.addEventListener('visibilitychange', function () {
+      if (doc.visibilityState === 'hidden') hideSource.fire();
+      else if (state.site && listState[state.site] === 'failed' && inputShown()) ensureList(state.site, true);
+    });
+    root.addEventListener('pagehide', function () { hideSource.fire(); });
+    root.addEventListener('online', function () {
+      if (state.site && listState[state.site] === 'failed' && inputShown()) ensureList(state.site, true);
     });
     $('send').addEventListener('click', send);
     $('restart').addEventListener('click', resetForm);
