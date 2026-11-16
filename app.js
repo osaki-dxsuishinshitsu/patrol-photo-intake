@@ -28,21 +28,30 @@
   function looksLikeLink(v) {
     return LINK_RE.test(nfkc(v));
   }
+  // 本文の区間の印(---BEGIN / ---END)の一部を含むか(全角は半角にそろえてからも見る。写真のコメントと同じ。
+  // 会社名・氏名・自社の会社名にも入れさせない = 仕様 job-20261110-001 D2・秘書の FIX 9f78c050)
+  function hasMarker(v) {
+    return String(v).indexOf('---') !== -1 || nfkc(v).indexOf('---') !== -1;
+  }
   // ページと受付との取り決めの版(受付の PROTOCOL と同じ)
   var PROTOCOL = 1;
   // このページが作る本文の書式の版(写真ごとのコメント = v3。仕様 D63。送った場所・社員の立場・一覧に無い会社 = v4。
   // 仕様 job-20261102-001 D134)。書式を作るこのコードが版を持つ。
   // config.js の formVersion(2)は変えない: Pages のキャッシュで古い app.js が新しい config.js を読んでも、
   // 古い app.js は自分の版の中身を送り続けられるように(仕様 D64)
-  var FORM_VERSION = 4;
+  // 立場「関係協力業者」と自社の会社名 = v5(仕様 job-20261110-001 D6。受付が古い版のままでも、記録は old_receiver で端末に残る)
+  var FORM_VERSION = 5;
   // 写真ごとのコメントの長さの上限(前後の空白を除いたコードポイントの数。受付と同じ。仕様 D61)
   var MAX_COMMENT = 100;
   // 1 通で選べる会社の上限(受付・受け側の流れと同じ)
   var MAX_COMPANIES = 20;
   // 立場が「その他」のときに入れる氏名の長さの上限
   var MAX_NAME = 30;
-  // 書式 v2 の立場(受け側の流れの式 H と同じ)
-  var ROLES_V2 = ['代表者', '安全衛生責任者', 'その他'];
+  // 書式 v5 の立場(受付の ROLES・受け側の流れの式 H と同じ 4 つ・同じ順。仕様 job-20261110-001 D1)。
+  // 3 番目の「関係協力業者」は 3 次以降の会社の人が 2 次の会社を選んで送るときの立場で、自社の会社名を添える(D2)
+  var ROLES_V5 = ['代表者', '安全衛生責任者', '関係協力業者', 'その他'];
+  // 立場が「関係協力業者」のときに入れる自社の会社名の長さの上限(受付の一覧に無い会社と同じ 60 字。D2)
+  var MAX_SUB_COMPANY = 60;
   // 書式 v4 の社員の立場の語(受付の STAFF_ROLES・流れの式 C4 と同じ 4 つ・同じ順。仕様 job-20261102-001 D134)
   var STAFF_ROLES_V4 = ['担当・補助', '安全部', '幹部', 'その他'];
   // 写真の縮小(長い辺の画素数と JPEG の品質)。紙の文字が読める大きさを残し、電波が弱くても送れる量にする
@@ -99,6 +108,25 @@
   // その現場の会社の一覧が分かっているか(受け取った・覚えた・同梱のどれか)
   function listKnown(config, siteCode) {
     return !!siteList(config, siteCode) || bundledHas(config, siteCode);
+  }
+
+  // 一覧の知らせの欄の文(受け取りの状態 'loading' / 'failed' / 'ok' / 無し)。一覧が分かっている現場では出さない
+  // (画面の動きは前と同じ。試験できるように renderListStatus から分けた。仕様 job-20261116-001 AC-5)
+  function listStatusText(config, siteCode, loadState) {
+    if (!siteCode || listKnown(config, siteCode)) return '';
+    if (loadState === 'loading') return '会社の一覧を受け取っています…';
+    if (loadState === 'failed') return '会社の一覧を受け取れませんでした。一覧に無い会社は、下の「一覧に無い会社」で書けます。';
+    return '';
+  }
+
+  // 「この現場には、選べる協力会社がありません」を出すか(一覧が分かっていて協力会社が 0 社のときだけ。仕様 D117)
+  function noPartnersShown(config, siteCode) {
+    return !!(siteCode && listKnown(config, siteCode) && !hasPartners(config, siteCode));
+  }
+
+  // 協力会社の紙(partner・paper)の現場の選択肢に出すか(一覧が分かっていない現場は出す。仕様 D71・job-20261102-001 D137)
+  function partnerSiteShown(config, siteCode) {
+    return !listKnown(config, siteCode) || hasPartners(config, siteCode);
   }
 
   // その現場の会社名(一覧の並び順・重複なし)。受け取った一覧があればそれ(協力会社だけ)、無ければ同梱の roster。
@@ -208,7 +236,8 @@
 
   // 選ばれた実施者をその現場の一覧の並び順にそろえ、重複(同じ会社)と一覧外を落とす。
   // 一覧に無い会社(unlisted: true の 1 つ目)は最後に足す(会社名は前後の空白を除く。仕様 job-20261102-001 D136)
-  // member = { company, role, name[, unlisted] }(name は立場が「その他」のときだけ使う)
+  // member = { company, role, name[, subCompany][, unlisted] }(name は立場が「その他」のときだけ、subCompany は
+  // 一覧の会社で立場が「関係協力業者」のときだけ使う。仕様 job-20261110-001 D1・D2)
   function normalizeMembers(config, siteCode, list) {
     var picked = list || [];
     var out = [];
@@ -217,7 +246,9 @@
         if (picked[i] && !picked[i].unlisted && picked[i].company === c) {
           var role = picked[i].role || '';
           var name = role === config.otherRole ? String(picked[i].name || '').trim() : '';
-          out.push({ company: c, role: role, name: name });
+          var row = { company: c, role: role, name: name };
+          if (config.relatedRole && role === config.relatedRole) row.subCompany = String(picked[i].subCompany || '').trim();
+          out.push(row);
           return;
         }
       }
@@ -243,7 +274,7 @@
     if (!c) return 'empty';
     if (c.length > 60) return 'length';
     if (/^[=+\-@]/.test(nfkc(c))) return 'head';
-    if (/[;|=]/.test(c) || /[;|=]/.test(nfkc(c)) || BAD_CHAR_RE.test(c) || /\p{Cs}/u.test(c) || bracketInName(c) || looksLikeLink(c)) return 'char';
+    if (/[;|=]/.test(c) || /[;|=]/.test(nfkc(c)) || BAD_CHAR_RE.test(c) || /\p{Cs}/u.test(c) || bracketInName(c) || looksLikeLink(c) || hasMarker(c)) return 'char';
     var key = squashName(c);
     if (key === squashName(config.ownCompany || '') || (config.ownCompanyLabel && key === squashName(config.ownCompanyLabel))) return 'own';
     if (visibleCompanies(config, siteCode).some(function (x) { return squashName(x) === key; })) return 'listed';
@@ -256,7 +287,7 @@
     var c = String(raw || '').trim();
     if (k === 'empty') return '「一覧に無い会社」の会社名を書いてください';
     if (k === 'length') return '会社名は 60 字までにしてください';
-    if (k === 'char') return '会社名に、使えない字があります(; | = [ ] ［ ］、改行、見えない字、URL の形)';
+    if (k === 'char') return '会社名に、使えない字があります(; | = [ ] ［ ］、---、改行、見えない字、URL の形)';
     if (k === 'head') return '会社名の先頭に = + - @ は使えません';
     if (k === 'listed') {
       var hit = visibleCompanies(config, siteCode).filter(function (x) { return squashName(x) === squashName(c); })[0];
@@ -266,10 +297,36 @@
     return null;
   }
 
+  // 立場が「関係協力業者」のときの自社の会社名の使えない書き方。戻り値 = null / 'empty' / 'length' / 'char' / 'head' / 'own'。
+  // 一覧に無い会社の会社名と同じ決まり(受付の範囲 = 60 字・区切りの字・先頭の記号・URL の形・括弧・自社の文字)。
+  // 自社の社名(ownCompanyLabel)と同じ名前を断るのはページだけ(受付・流れ・読み取り例には社名を書かない)。
+  // 一覧にある 2 次の会社と同じ名前は断らない(仕様 job-20261110-001 D2・未決)
+  function subCompanyProblem(config, raw) {
+    var c = String(raw || '').trim();
+    if (!c) return 'empty';
+    if (c.length > MAX_SUB_COMPANY) return 'length';
+    if (/^[=+\-@]/.test(nfkc(c))) return 'head';
+    if (/[;|=]/.test(c) || /[;|=]/.test(nfkc(c)) || BAD_CHAR_RE.test(c) || /\p{Cs}/u.test(c) || bracketInName(c) || looksLikeLink(c) || hasMarker(c)) return 'char';
+    var key = squashName(c);
+    if (key === squashName(config.ownCompany || '') || (config.ownCompanyLabel && key === squashName(config.ownCompanyLabel))) return 'own';
+    return null;
+  }
+
+  // 画面に出す理由(shown = 選んだ 2 次の会社の名前)
+  function subCompanyMessage(config, shown, raw) {
+    var k = subCompanyProblem(config, raw);
+    if (k === 'empty') return '「' + shown + '」の関係協力業者として送るときは、自社の会社名を入れてください';
+    if (k === 'length') return '自社の会社名は ' + MAX_SUB_COMPANY + ' 字までにしてください';
+    if (k === 'char') return '自社の会社名に、使えない字があります(; | = [ ] ［ ］、---、改行、見えない字、URL の形)';
+    if (k === 'head') return '自社の会社名の先頭に = + - @ は使えません';
+    if (k === 'own') return displayCompany(config, config.ownCompany) + 'の分は、最初の画面で「社員」を選んで送ってください';
+    return null;
+  }
+
   // 氏名(立場が「その他」のとき): 1〜30 文字、本文の区切り(; | =)・制御文字・見えない書式の文字・URL の形は不可、先頭の = + - @ も不可
   function isValidName(n) {
     return typeof n === 'string' && n.length >= 1 && n.length <= MAX_NAME &&
-      !/[;|=\/]/.test(n) && !BAD_CHAR_RE.test(n) && !looksLikeLink(n) && !HOST_RE.test(nfkc(n)) && !/^[=+\-@]/.test(nfkc(n));
+      !/[;|=\/]/.test(n) && !BAD_CHAR_RE.test(n) && !looksLikeLink(n) && !HOST_RE.test(nfkc(n)) && !/^[=+\-@]/.test(nfkc(n)) && !hasMarker(n);
   }
 
   // 写真ごとのコメント: 前後の空白(全角を含む)を除いた形(送る値)
@@ -413,14 +470,18 @@
       var shown = m.unlisted ? (m.company || '一覧に無い会社') : displayCompany(config, m.company);
       // 社員の自分の分の氏名は、頭に立場の語が付いた形で数える(仕様 D118)
       var withRole = s.who === 'self' && m.company === config.ownCompany && s.staffRole;
-      if ((config.roles || []).indexOf(m.role) === -1) {
+      if ((config.roles || []).indexOf(m.role) === -1 || (m.unlisted && config.relatedRole && m.role === config.relatedRole)) {
+        // 一覧に無い会社には関係協力業者を選ばせない(仕様 job-20261110-001 D1。画面にも出さない)
         errors.push({ field: 'roles', message: '「' + shown + '」で実施した人の立場を選んでください' });
+      } else if (config.relatedRole && m.role === config.relatedRole) {
+        var sm = subCompanyMessage(config, shown, m.subCompany);
+        if (sm) errors.push({ field: 'roles', message: sm });
       } else if (m.role === config.otherRole && !m.name) {
         errors.push({ field: 'roles', message: '「' + shown + '」で実施した人の氏名を入れてください' });
       } else if (m.role === config.otherRole && !isValidName(m.name)) {
         errors.push({ field: 'roles', message: withRole ?
-          '氏名は、頭に付ける立場(' + s.staffRole + ' と空白)を含めて ' + MAX_NAME + ' 文字までで、; | = / @ と URL は使えません' :
-          '「' + shown + '」の氏名は ' + MAX_NAME + ' 文字までで、; | = / @ と URL は使えません(先頭に + - も使えません)' });
+          '氏名は、頭に付ける立場(' + s.staffRole + ' と空白)を含めて ' + MAX_NAME + ' 文字までで、; | = / @ --- と URL は使えません' :
+          '「' + shown + '」の氏名は ' + MAX_NAME + ' 文字までで、; | = / @ --- と URL は使えません(先頭に + - も使えません)' });
       }
     });
 
@@ -677,7 +738,10 @@
       dept: state.dept,
       site: state.site,
       members: members.map(function (m) {
-        return m.role === config.otherRole ? { company: m.company, role: m.role, name: m.name } : { company: m.company, role: m.role };
+        if (m.role === config.otherRole) return { company: m.company, role: m.role, name: m.name };
+        // 関係協力業者は自社の会社名を添える(仕様 job-20261110-001 D2)
+        if (config.relatedRole && m.role === config.relatedRole && !m.unlisted) return { company: m.company, role: m.role, subCompany: m.subCompany };
+        return { company: m.company, role: m.role };
       }),
       created: meta.created,
       device: device,
@@ -740,9 +804,11 @@
       // 公開してよいのは現場コードと会社名だけ(ほかの項目が紛れ込んだら止める)
       if (Object.keys(r).some(function (k) { return k !== 'site' && k !== 'company'; })) problems.push('roster[' + i + '].keys');
     });
-    if (!(config.roster || []).length) problems.push('roster');
-    // 立場は本文の書式(版)の一部。受け側の流れと同じ 3 つ・同じ順でなければ止める(変えるときは版を上げる)
-    if (JSON.stringify(config.roles) !== JSON.stringify(ROLES_V2) || config.otherRole !== ROLES_V2[2]) problems.push('roles');
+    // 同梱の roster は 0 行でもよい(すべての現場が受付から一覧を受け取る形。前は 0 行なら 'roster' で止めていた。
+    // 仕様 job-20261116-001 D3)
+    // 立場は本文の書式(版)の一部。受付・受け側の流れと同じ 4 つ・同じ順でなければ止める(変えるときは版を上げる。
+    // v5 で関係協力業者を足した = 仕様 job-20261110-001 D6)
+    if (JSON.stringify(config.roles) !== JSON.stringify(ROLES_V5) || config.relatedRole !== ROLES_V5[2] || config.otherRole !== ROLES_V5[3]) problems.push('roles');
     // 同梱の roster に行がある現場には自社の行があること(仕様 D52)。自社以外の会社が 0 社の現場は誤りにしない
     // (協力会社の道では選べない。仕様 D71・D117)。同梱に行の無い現場(受付から一覧を受け取る現場)は見ない(仕様 job-20261102-001 D137)
     (config.sites || []).forEach(function (s) {
@@ -793,6 +859,9 @@
     targetsForSite: targetsForSite,
     siteList: siteList,
     listKnown: listKnown,
+    listStatusText: listStatusText,
+    noPartnersShown: noPartnersShown,
+    partnerSiteShown: partnerSiteShown,
     unlistedProblem: unlistedProblem,
     unlistedMessage: unlistedMessage,
     createLocator: createLocator,
@@ -801,6 +870,10 @@
     parseList: parseList,
     sameShownList: sameShownList,
     STAFF_ROLES_V4: STAFF_ROLES_V4,
+    ROLES_V5: ROLES_V5,
+    MAX_SUB_COMPANY: MAX_SUB_COMPANY,
+    subCompanyProblem: subCompanyProblem,
+    subCompanyMessage: subCompanyMessage,
     LIST_KEY_RE: LIST_KEY_RE,
     FORM_VERSION: FORM_VERSION,
     MAX_COMMENT: MAX_COMMENT,
@@ -1009,10 +1082,7 @@
     var box = $('list-status');
     if (!box) return;
     var code = state.site;
-    var known = code && listKnown(config, code);
-    var text = listNote ||
-      (code && !known && listState[code] === 'loading' ? '会社の一覧を受け取っています…' :
-        code && !known && listState[code] === 'failed' ? '会社の一覧を受け取れませんでした。一覧に無い会社は、下の「一覧に無い会社」で書けます。' : '');
+    var text = listNote || listStatusText(config, code, code ? listState[code] : '');
     if (box.textContent !== text) box.textContent = text;
   }
 
@@ -1060,7 +1130,7 @@
   // 協力会社の紙(partner・paper)では、自社以外の会社が 0 社の現場を出さない(会社を選べずに止まるため。仕様 D71)
   function fillSiteOptions(list) {
     // 一覧が分かっていない現場は出す(一覧に無い会社で送れるため。仕様 job-20261102-001 D137)
-    if (state.who === 'partner' || state.who === 'paper') list = list.filter(function (s) { return !listKnown(config, s.code) || hasPartners(config, s.code); });
+    if (state.who === 'partner' || state.who === 'paper') list = list.filter(function (s) { return partnerSiteShown(config, s.code); });
     var sel = $('site-select');
     sel.textContent = '';
     sel.appendChild(el('option', { value: '' }, '選んでください'));
@@ -1304,7 +1374,7 @@
     renderListStatus();
     // 協力会社の一覧が無い現場(現場 QR で開いたとき)は、行き止まりにしないで社員の道を案内する(仕様 D117)。
     // 一覧がまだ分からない現場は、一覧の知らせの欄で知らせる(仕様 job-20261102-001 D137)
-    $('company-none').hidden = !(state.site && listKnown(config, state.site) && !hasPartners(config, state.site));
+    $('company-none').hidden = !noPartnersShown(config, state.site);
     $('company-none').textContent = state.who === 'paper' ?
       'この現場には、選べる協力会社がありません。自分の分を送るときは、上の「選び直す」から「自分のチェックシートを送る」を選んでください。' :
       'この現場には、選べる協力会社がありません。社員の方は、上の「選び直す」から社員を選んでください。';
@@ -1335,11 +1405,13 @@
     renderUnlisted(box);
   }
 
-  // 会社を選ぶと開く、その会社で実施した人の立場の欄(「その他」のときだけ氏名の欄)。一覧の会社と一覧に無い会社で同じ欄
+  // 会社を選ぶと開く、その会社で実施した人の立場の欄(「その他」のときだけ氏名の欄、「関係協力業者」のときだけ自社の会社名の欄)。
+  // 一覧の会社と一覧に無い会社で同じ欄。一覧に無い会社(c が空)には関係協力業者を出さない(仕様 job-20261110-001 D1)
   function roleGroup(member, id, c) {
     var group = el('fieldset', { 'class': 'roles' });
     group.appendChild(el('legend', null, (c || '一覧に無い会社') + ' で実施した人の立場'));
     config.roles.forEach(function (r, j) {
+      if (!c && config.relatedRole && r === config.relatedRole) return;
       var rid = id + '-role-' + j;
       var rl = el('label', { 'for': rid, 'class': 'check' });
       var radio = el('input', { type: 'radio', id: rid, name: id + '-role', value: r });
@@ -1365,6 +1437,28 @@
       });
       group.appendChild(nameInput);
       group.appendChild(el('p', { 'class': 'hint' }, '氏名はパトロールの実施記録として社内でだけ使います。送り終えるまではこの端末に残り、送り終えたら消えます(「送れません」となった記録は、下の「送信の記録」から消すまで残ります)。'));
+    }
+    // 自社の会社名の欄(関係協力業者のときだけ・必須・60 字まで。仕様 job-20261110-001 D2)
+    if (c && config.relatedRole && member.role === config.relatedRole) {
+      var sid = id + '-sub';
+      var serr = el('p', { id: sid + '-error', 'class': 'error comment-error', 'aria-live': 'polite' });
+      group.appendChild(el('label', { 'for': sid, 'class': 'name-label' }, '自社の会社名'));
+      var subInput = el('input', { type: 'text', id: sid, maxlength: String(MAX_SUB_COMPANY), autocomplete: 'organization', 'aria-required': 'true', 'aria-describedby': sid + '-note ' + sid + '-error' });
+      subInput.value = member.subCompany || '';
+      var showSubErr = function () {
+        var m = subCompanyMessage(config, c, member.subCompany) || '';
+        if (serr.textContent !== m) serr.textContent = m;
+        subInput.setAttribute('aria-invalid', m ? 'true' : 'false');
+      };
+      subInput.addEventListener('input', function () {
+        member.subCompany = subInput.value;
+        showSubErr();
+        refresh();
+      });
+      group.appendChild(subInput);
+      group.appendChild(el('p', { id: sid + '-note', 'class': 'hint' }, '3 次以降の会社の方は、自社の会社名を入れてください。「' + c + '」の 1 回として数えます。'));
+      group.appendChild(serr);
+      showSubErr();
     }
     return group;
   }
@@ -1503,7 +1597,8 @@
 
   function membersText(members) {
     return members.map(function (m) {
-      return displayCompany(config, m.company) + (m.unlisted ? '(一覧に無い会社)' : '') + '(' + m.role + (m.role === config.otherRole ? ': ' + m.name : '') + ')';
+      return displayCompany(config, m.company) + (m.unlisted ? '(一覧に無い会社)' : '') + '(' + m.role + (m.role === config.otherRole ? ': ' + m.name : '') +
+        (m.subCompany ? ': ' + m.subCompany : '') + ')';
     }).join('、');
   }
 
@@ -1520,6 +1615,7 @@
       li.appendChild(el('span', { 'class': 'who-line' }, '会社 ' + displayCompany(config, m.company) + (m.unlisted ? '(一覧に無い会社)' : '')));
       li.appendChild(el('span', { 'class': 'who-line' }, '立場 ' + role));
       if (name) li.appendChild(el('span', { 'class': 'who-line' }, '氏名 ' + name));
+      if (m.subCompany) li.appendChild(el('span', { 'class': 'who-line' }, '自社の会社名 ' + m.subCompany));
       whoList.appendChild(li);
     });
     $('c-who-ask').textContent = state.who === 'paper' ? '紙に書かれた会社・立場と同じですか' : 'ご本人ですか';
