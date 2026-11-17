@@ -745,6 +745,167 @@
     return before === JSON.stringify([companiesForSite(next, siteCode), targetsForSite(next, siteCode), listKnown(next, siteCode)]);
   }
 
+  /* ---- 会社の一覧の受け取りの待ち時間・取り直し・重なり(仕様 job-20261117-002 D1〜D6・D10) ---- */
+
+  var LIST_WAIT_MS = 30000;               // 1 回の問い合わせの待ち時間(D1)
+  var LIST_RETRY_GAPS_MS = [2000, 4000];  // 取り直しの前の間(鍵のある問い合わせだけ。3 回まで。D2)
+
+  // 受け取れなかったときの理由の 1 行(D10)。鍵・URL・会社名・技術語を入れない
+  var LIST_FAIL_TEXT = {
+    timeout: '理由: 時間切れ(受付からの返事が時間内に届きませんでした)',
+    network: '理由: つながらない(受付につながりませんでした。電波のある所で試してください)',
+    shape: '理由: 返事の形の誤り(受付の返事を読めませんでした)',
+    none: '理由: 一覧なし(受付から一覧を出してもらえませんでした)',
+    bad: '理由: 中身の誤り(受付から届いた一覧に誤りがありました)',
+    nokey: '理由: 合言葉なし(この画面は合言葉なしで開かれています。現場の掲示用紙の QR から開くと受け取れます)'
+  };
+
+  // 知らせの欄のすぐ後ろに出す理由の 1 行。「受け取れませんでした」のときだけ(一覧が分かっている現場では出さない)
+  function listFailNote(config, siteCode, loadState, reason) {
+    if (!siteCode || loadState !== 'failed' || listKnown(config, siteCode)) return '';
+    return LIST_FAIL_TEXT[reason] || '';
+  }
+
+  // 鍵のある問い合わせか(listUrl が URL に鍵を付けるときと同じ判定。D2・D4)
+  function listKeyed(key) {
+    return !!(key && LIST_KEY_RE.test(key));
+  }
+
+  // 「もう一度受け取る」を出すか(鍵のある問い合わせで「受け取れませんでした」のときだけ。D3・D4)
+  function listRetryShown(config, siteCode, loadState, keyed) {
+    return !!(keyed && siteCode && loadState === 'failed' && !listKnown(config, siteCode));
+  }
+
+  // 現場ごとの一覧の受け取り。deps = {
+  //   fetch(url, opts), setTimeout(fn, ms), clearTimeout(id), AbortController(無ければ null), isOnline()(false = 電波が無いと分かっている),
+  //   request(code) → { url, keyed }, parse(code, res) → 一覧か null, onList(code, list), onChange(code) }
+  // 状態は現場ごと: '' / 'loading' / 'ok' / 'failed'
+  function createListLoader(deps) {
+    var sites = {};
+
+    function site(code) {
+      var k = '$' + code;
+      if (!sites[k]) sites[k] = { state: '', tries: 0, seq: 0, keyed: false, reason: '', cur: null, gap: null };
+      return sites[k];
+    }
+
+    // 待っている間・走っている問い合わせを止める
+    function stopWaits(s) {
+      if (s.gap !== null) { deps.clearTimeout(s.gap); s.gap = null; }
+      if (s.cur) {
+        deps.clearTimeout(s.cur.timer);
+        if (s.cur.ctrl && !s.cur.done) { try { s.cur.ctrl.abort(); } catch (e) { /* 止められなくても数えない */ } }
+        s.cur = null;
+      }
+    }
+
+    // 一覧が届いた(時間切れの後に遅れて届いたものも、parse を通れば使って取り直しをやめる。D5)
+    function got(code, list) {
+      var s = site(code);
+      if (s.state === 'ok') return;
+      s.seq++;              // 走っている取り直しの結果を数えない
+      stopWaits(s);
+      s.state = 'ok';
+      s.reason = '';
+      try { deps.onList(code, list); } finally { deps.onChange(code); }
+    }
+
+    // 1 回が失敗した。鍵のある問い合わせで取り直す失敗なら、3 回まで間をおいて取り直す(D2)
+    function failed(code, my, kind, retryable) {
+      var s = site(code);
+      if (my !== s.seq || s.state !== 'loading') return;
+      s.cur = null;
+      if (retryable && s.keyed && s.tries < LIST_RETRY_GAPS_MS.length + 1 && deps.isOnline() !== false) {
+        s.gap = deps.setTimeout(function () {
+          s.gap = null;
+          if (s.state === 'loading' && my === s.seq) begin(code);
+        }, LIST_RETRY_GAPS_MS[s.tries - 1]);
+        return;
+      }
+      s.state = 'failed';
+      s.reason = !s.keyed && kind === 'none' ? 'nokey' : kind;
+      deps.onChange(code);
+    }
+
+    // 1 回を始める。始める途中で例外が出ても「受け取っています…」のまま止めない(取り直さない失敗にする。review IMPL P3)
+    function begin(code) {
+      try {
+        attempt(code);
+      } catch (e) {
+        var s = site(code);
+        if (s.state !== 'loading') return;
+        s.seq++;
+        stopWaits(s);
+        s.state = 'failed';
+        s.reason = 'network';
+        deps.onChange(code);
+      }
+    }
+
+    function attempt(code) {
+      var s = site(code);
+      s.tries++;
+      var my = ++s.seq;
+      var req = deps.request(code);
+      s.keyed = !!req.keyed;
+      var ctrl = deps.AbortController ? new deps.AbortController() : null;
+      var cur = { timer: null, ctrl: ctrl, done: false };
+      s.cur = cur;
+      // 1 回の区切り(時間切れ・失敗の応答)。区切った後に届いたものは数えない(正しい一覧だけは got で使う)
+      function settle(kind, retryable) {
+        if (cur.done) return;
+        cur.done = true;
+        deps.clearTimeout(cur.timer);
+        failed(code, my, kind, retryable);
+      }
+      cur.timer = deps.setTimeout(function () {
+        if (cur.done) return;
+        if (ctrl) { try { ctrl.abort(); } catch (e) { /* 止められなくても数えない */ } }
+        settle('timeout', true);
+      }, LIST_WAIT_MS);
+      new Promise(function (resolve) {
+        resolve(deps.fetch(req.url, {
+          method: 'GET', redirect: 'follow', credentials: 'omit', cache: 'no-store', referrerPolicy: 'no-referrer',
+          signal: ctrl ? ctrl.signal : undefined
+        }));
+      }).then(function (r) {
+        if (!r || !r.ok) { settle('shape', true); return; }
+        return new Promise(function (resolve) { resolve(r.json()); }).then(function (res) {
+          var list = deps.parse(code, res);
+          if (list) { got(code, list); return; }
+          // 受付は一時的な例外も鍵違い・一覧の口が閉じているのも no_list で返すので取り直す。ほかは何度問い合わせても同じ
+          if (res && res.ok === false && res.code === 'no_list') settle('none', true);
+          else settle('bad', false);
+        }, function () {
+          settle('shape', true);
+        });
+      }, function () {
+        settle('network', true);
+      }).then(null, function () {
+        // 届いた後の処理(parse・一覧を当てる)で例外が出たとき。まだ区切っていなければ取り直さない失敗にする(review IMPL P3)
+        settle('bad', false);
+      });
+    }
+
+    return {
+      // 問い合わせを始める。受け取っている間・受け取れた後は何もしない(重なっても問い合わせは 1 つ。D5)。
+      // 「受け取れませんでした」の後は force のときだけ、回数を初めから数え直して始める
+      load: function (code, force) {
+        var s = site(code);
+        if (s.state === 'loading' || s.state === 'ok' || (s.state === 'failed' && !force)) return;
+        stopWaits(s);
+        s.state = 'loading';
+        s.tries = 0;
+        s.reason = '';
+        deps.onChange(code);
+        begin(code);
+      },
+      state: function (code) { return code ? site(code).state : ''; },
+      reason: function (code) { return code ? site(code).reason : ''; },
+      keyed: function (code) { return code ? site(code).keyed : false; }
+    };
+  }
+
   // 受付へ送る中身(仕様 D21 の JSON。v3 で comments を足した。仕様 D63。v4 で loc・staffRole・unlisted を足した。
   // 仕様 job-20261102-001 D134)。件名・本文・宛先は受付が決める。
   // comments は写真の順に、写真と同じ数(空のコメントは空の文字列)。loc = createLocator の result(保存の前に固める)
@@ -891,6 +1052,13 @@
     listUrl: listUrl,
     parseList: parseList,
     sameShownList: sameShownList,
+    createListLoader: createListLoader,
+    listRetryShown: listRetryShown,
+    listKeyed: listKeyed,
+    listFailNote: listFailNote,
+    LIST_WAIT_MS: LIST_WAIT_MS,
+    LIST_RETRY_GAPS_MS: LIST_RETRY_GAPS_MS,
+    LIST_FAIL_TEXT: LIST_FAIL_TEXT,
     STAFF_ROLES_V4: STAFF_ROLES_V4,
     ROLES_V5: ROLES_V5,
     MAX_SUB_COMPANY: MAX_SUB_COMPANY,
@@ -926,8 +1094,26 @@
   // 受付から受け取った・端末に覚えた現場ごとの会社の一覧(仕様 job-20261102-001 D137)
   config.siteLists = {};
   var O = root.PatrolOutbox;
-  // 一覧の受け取りの状態(現場ごと): 'loading' / 'ok' / 'failed'。確認・完了の画面にいる間に届いた一覧は pendingLists に置く
-  var listState = {};
+  // 一覧の受け取り(現場ごとの状態 'loading' / 'ok' / 'failed'・取り直し・時間切れ。仕様 job-20261117-002 D6)。
+  // 確認・完了の画面にいる間に届いた一覧は pendingLists に置く
+  var listLoader = createListLoader({
+    fetch: function (url, opts) { return root.fetch(url, opts); },
+    setTimeout: function (fn, ms) { return root.setTimeout(fn, ms); },
+    clearTimeout: function (id) { root.clearTimeout(id); },
+    AbortController: typeof root.AbortController === 'function' ? root.AbortController : null,
+    isOnline: function () { return root.navigator ? root.navigator.onLine : undefined; },
+    // 鍵は現場の QR で開いたその現場のときだけ付ける(listUrl の付け方と同じ判定で、鍵のある問い合わせかを決める)
+    request: function (code) {
+      var key = siteKey && siteKey.site === code ? siteKey.k : '';
+      return { url: listUrl(config, code, key), keyed: listKeyed(key) };
+    },
+    parse: function (code, res) { return parseList(config, code, res); },
+    onList: function (code, list) {
+      writeListCache(code, list);
+      applyList(code, list);
+    },
+    onChange: function () { renderListStatus(); }
+  });
   var pendingLists = {};
   var listNote = '';     // 一覧の知らせの欄に出す、選んでいた会社を外したときの文
   // 現場の QR の鍵(URL の k。受付への問い合わせにだけ使う)= { site, k }
@@ -1070,44 +1256,34 @@
     });
   }
 
-  // その現場の一覧を受付に 1 回問い合わせる(同じ現場は 1 回の表示の間に 1 回。届かなかったら force で取り直す)
+  // その現場の一覧を受付に問い合わせる(同じ現場は 1 回の表示の間に 1 続き。鍵のある問い合わせは 3 回まで自動で取り直す。
+  // 届かなかったら force で回数を初めから数え直して取り直す。決まりは createListLoader。仕様 job-20261117-002 D2・D6)
   function ensureList(code, force) {
     if (!code || !root.fetch) return;
     if (!config.siteLists[code]) {
       var cached = readListCache(code);
       if (cached) config.siteLists[code] = cached;
     }
-    if (listState[code] === 'loading' || listState[code] === 'ok' || (listState[code] === 'failed' && !force)) return;
-    listState[code] = 'loading';
-    renderListStatus();
-    var key = siteKey && siteKey.site === code ? siteKey.k : '';
-    var ctrl = typeof root.AbortController === 'function' ? new root.AbortController() : null;
-    var timer = root.setTimeout(function () { if (ctrl) ctrl.abort(); }, 10000);
-    root.fetch(listUrl(config, code, key), {
-      method: 'GET', redirect: 'follow', credentials: 'omit', cache: 'no-store', referrerPolicy: 'no-referrer',
-      signal: ctrl ? ctrl.signal : undefined
-    }).then(function (r) { return r.json(); }).then(function (res) {
-      root.clearTimeout(timer);
-      var list = parseList(config, code, res);
-      if (!list) throw new Error('no_list');
-      listState[code] = 'ok';
-      writeListCache(code, list);
-      applyList(code, list);
-      renderListStatus();
-    }).catch(function () {
-      root.clearTimeout(timer);
-      listState[code] = 'failed';
-      renderListStatus();
-    });
+    listLoader.load(code, force);
   }
 
-  // 一覧の知らせの欄(待っている・届かない・選んでいた会社を外した)
+  // 一覧の知らせの欄(待っている・届かない・選んでいた会社を外した)と、そのすぐ後ろの理由の 1 行・「もう一度受け取る」
+  // (仕様 job-20261117-002 D3・D10。知らせの欄の文は前と同じ)
   function renderListStatus() {
     var box = $('list-status');
     if (!box) return;
     var code = state.site;
-    var text = listNote || listStatusText(config, code, code ? listState[code] : '');
+    var st = listLoader.state(code);
+    var text = listNote || listStatusText(config, code, st);
     if (box.textContent !== text) box.textContent = text;
+    var why = $('list-why');
+    if (why) {
+      var note = listFailNote(config, code, st, listLoader.reason(code));
+      if (why.textContent !== note) why.textContent = note;
+      why.hidden = !note;
+    }
+    var again = $('list-retry');
+    if (again) again.hidden = !listRetryShown(config, code, st, listLoader.keyed(code));
   }
 
   // 今の現場の一覧に無い写真ごとの会社の選択を「指定なし」に戻す(自由記入は残す。仕様 D78)
@@ -1128,7 +1304,7 @@
     $('site-fixed-dept').textContent = site ? site.dept : '';
     listNote = '';
     // 現場が決まったら、その現場の一覧を受付から受け取る(画面は待たない。仕様 D137)
-    if (state.site) ensureList(state.site, listState[state.site] === 'failed');
+    if (state.site) ensureList(state.site, listLoader.state(state.site) === 'failed');
     renderListStatus();
     // 新しい現場の一覧に無い会社の選択は「指定なし」に戻す(自由記入は残す。仕様 D78)
     var choices = targetsForSite(config, state.site);
@@ -2100,8 +2276,21 @@
     });
 
     // 一覧の知らせの欄(会社の欄の上。index.html は変えない。仕様 job-20261102-001 D137)
-    var listBox = el('p', { id: 'list-status', 'class': 'hint', 'aria-live': 'polite' });
+    var listBox = el('p', { id: 'list-status', 'class': 'hint', 'aria-live': 'polite', tabindex: '-1' });
     $('company-list').parentNode.insertBefore(listBox, $('company-list'));
+    // そのすぐ後ろ(知らせの欄の外)に、受け取れなかった理由の 1 行と「もう一度受け取る」(仕様 job-20261117-002 D3・D10)
+    var listWhy = el('p', { id: 'list-why', 'class': 'hint list-why', 'aria-live': 'polite' });
+    listWhy.hidden = true;
+    $('company-list').parentNode.insertBefore(listWhy, $('company-list'));
+    var listAgain = el('button', { type: 'button', id: 'list-retry', 'class': 'link list-retry' }, 'もう一度受け取る');
+    listAgain.hidden = true;
+    $('company-list').parentNode.insertBefore(listAgain, $('company-list'));
+    listAgain.addEventListener('click', function () {
+      if (!state.site) return;
+      ensureList(state.site, true);
+      // 押したボタンは受け取っている間は隠れるので、フォーカスを知らせの欄へ移す
+      listBox.focus();
+    });
 
     initWho();
     renderSiteChoice();
@@ -2149,11 +2338,11 @@
     // 送信の待ちの間にページが隠れたら待ちをやめる・届かなかった一覧は電波が戻ったら取り直す(仕様 D135・D137)
     doc.addEventListener('visibilitychange', function () {
       if (doc.visibilityState === 'hidden') hideSource.fire();
-      else if (state.site && listState[state.site] === 'failed' && inputShown()) ensureList(state.site, true);
+      else if (state.site && listLoader.state(state.site) === 'failed' && inputShown()) ensureList(state.site, true);
     });
     root.addEventListener('pagehide', function () { hideSource.fire(); });
     root.addEventListener('online', function () {
-      if (state.site && listState[state.site] === 'failed' && inputShown()) ensureList(state.site, true);
+      if (state.site && listLoader.state(state.site) === 'failed' && inputShown()) ensureList(state.site, true);
     });
     $('send').addEventListener('click', send);
     $('restart').addEventListener('click', resetForm);
