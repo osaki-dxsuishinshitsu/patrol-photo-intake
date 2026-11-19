@@ -30,12 +30,15 @@
     // 画面に出す自社の名前(送る値と受け側の表は ownCompany のまま。仕様 D119)
     ownCompanyLabel: '大崎建設',
 
-    // 社員の立場(最初の 2 択で「社員」を選んだ後に選ぶ)。token は自分の分を送るとき氏名の頭に付ける語
-    // (試用の間の仮。送る中身の形と版は変えない。空白を含まない短い語。仕様 D118)
+    // 社員の立場(最初の 2 択で「社員」を選んだ後に選ぶ)。token は自分の分を送るとき氏名の頭に付ける語で、
+    // 本文の staff_role にもなる(空白を含まない短い語。仕様 D118)。token の組と並びは書式の一部で、app.js・受付・
+    // 受け側の流れの式と同じ 5 つ・同じ順(変えるときは版を上げる。仕様 job-20261102-001 D134・「労務部」= 書式 v6・
+    // job-20261119-002 D1・D3)。label は画面の名前だけなので変えてよい
     staffRoles: [
       { label: 'この現場の担当・補助', token: '担当・補助' },
       { label: '安全部', token: '安全部' },
       { label: '幹部', token: '幹部' },
+      { label: '労務部', token: '労務部' },
       { label: 'その他', token: 'その他' }
     ],
 
@@ -79,7 +82,29 @@
       { code: 'P-30', dept: 'B-3' },
       { code: 'P-31', dept: 'B-4' },
       { code: 'P-32', dept: 'B-4' },
-      { code: 'P-33', dept: 'B-4' }
+      { code: 'P-33', dept: 'B-4' },
+      { code: 'P-34', dept: 'B-4' },
+      { code: 'P-35', dept: 'B-4' },
+      { code: 'P-36', dept: 'B-4' },
+      { code: 'P-37', dept: 'B-5' },
+      { code: 'P-38', dept: 'B-5' },
+      { code: 'P-39', dept: 'B-6' },
+      { code: 'P-40', dept: 'B-6' },
+      { code: 'P-41', dept: 'B-1' },
+      { code: 'P-42', dept: 'B-1' },
+      { code: 'P-43', dept: 'B-1' },
+      { code: 'P-44', dept: 'B-1' },
+      { code: 'P-45', dept: 'B-1' },
+      { code: 'P-46', dept: 'B-1' },
+      { code: 'P-47', dept: 'B-1' },
+      { code: 'P-48', dept: 'B-1' },
+      { code: 'P-49', dept: 'B-1' },
+      { code: 'P-50', dept: 'B-1' },
+      { code: 'P-51', dept: 'B-1' },
+      { code: 'P-52', dept: 'B-1' },
+      { code: 'P-53', dept: 'B-1' },
+      { code: 'P-54', dept: 'B-3' },
+      { code: 'P-55', dept: 'B-3' }
     ]
   };
 

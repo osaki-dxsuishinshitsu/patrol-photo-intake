@@ -39,7 +39,8 @@
       <!-- 社員: 立場 → 何を送るか(仕様 D118・D52) -->
       <fieldset id="who" class="field who" hidden>
         <legend>立場と、何を送るかを選んでください</legend>
-        <div id="staff-roles" class="staff-roles" role="radiogroup" aria-label="立場"></div>
+        <div id="staff-roles" class="staff-roles" role="radiogroup" aria-label="立場" aria-describedby="staff-role-note"></div>
+        <p id="staff-role-note" class="hint">土木の部の一員ではなく労務部として回った方は「労務部」、応援先の部の一員として回った方は「この現場の担当・補助」を選んでください。</p>
         <div class="buttons">
           <button type="button" id="who-self" disabled>自分のチェックシートを送る</button>
           <button type="button" id="who-paper" disabled>協力会社の紙を代わりに送る</button>

@@ -39,8 +39,9 @@
   // 仕様 job-20261102-001 D134)。書式を作るこのコードが版を持つ。
   // config.js の formVersion(2)は変えない: Pages のキャッシュで古い app.js が新しい config.js を読んでも、
   // 古い app.js は自分の版の中身を送り続けられるように(仕様 D64)
-  // 立場「関係協力業者」と自社の会社名 = v5(仕様 job-20261110-001 D6。受付が古い版のままでも、記録は old_receiver で端末に残る)
-  var FORM_VERSION = 5;
+  // 立場「関係協力業者」と自社の会社名 = v5(仕様 job-20261110-001 D6)。社員の立場「労務部」= v6(仕様 job-20261119-002 D3。
+  // 受付が古い版のままでも、記録は old_receiver で端末に残る)
+  var FORM_VERSION = 6;
   // 写真ごとのコメントの長さの上限(前後の空白を除いたコードポイントの数。受付と同じ。仕様 D61)
   var MAX_COMMENT = 100;
   // 1 通で選べる会社の上限(受付・受け側の流れと同じ)
@@ -56,8 +57,9 @@
   var SUB_COMPANY_LABEL = '自社の会社名・氏名';
   // 氏名を入れる欄の下に置く、氏名の扱いの文(「その他」の氏名の欄と関係協力業者の欄で同じ文。job-20261117-001 D1)
   var NAME_USE_NOTE = '氏名はパトロールの実施記録として社内でだけ使います。送り終えるまではこの端末に残り、送り終えたら消えます(「送れません」となった記録は、下の「送信の記録」から消すまで残ります)。';
-  // 書式 v4 の社員の立場の語(受付の STAFF_ROLES・流れの式 C4 と同じ 4 つ・同じ順。仕様 job-20261102-001 D134)
-  var STAFF_ROLES_V4 = ['担当・補助', '安全部', '幹部', 'その他'];
+  // 書式 v6 の社員の立場の語(受付の STAFF_ROLES・流れの式 C6 と同じ 5 つ・同じ順。仕様 job-20261102-001 D134・
+  // v6 で「労務部」を足した = job-20261119-002 D1)
+  var STAFF_ROLES_V6 = ['担当・補助', '安全部', '幹部', '労務部', 'その他'];
   // 写真の縮小(長い辺の画素数と JPEG の品質)。紙の文字が読める大きさを残し、電波が弱くても送れる量にする
   var MAX_SIDE = 1600;
   var JPEG_QUALITY = 0.8;
@@ -220,7 +222,8 @@
   }
 
   // 社員が自分の分を送るときの氏名 = 立場の語 + 半角の空白 + 氏名(仕様 D118)。v4 では立場の語を staff_role としても送るので、
-  // 語は書式の一部(STAFF_ROLES_V4。変えるときは受付・ページ・流れの式 C4 を同じ便で直す。仕様 job-20261102-001 D134)。
+  // 語は書式の一部(STAFF_ROLES_V6。変えるときは版を上げ、受付・ページ・流れの式 C6 を同じ便で直す。仕様 job-20261102-001 D134・
+  // job-20261119-002 D3)。
   // 氏名が空なら空(立場の語だけで送らせない)
   function staffName(token, name) {
     var n = String(name || '').trim();
@@ -977,8 +980,9 @@
           }
           if (r && typeof r.token === 'string') seenRoles['$' + r.token] = true;
         });
-        // 立場の語は書式 v4 の一部(受付は決まった 4 語と照らす)。並びまで同じでなければ止める(ROLES_V2 と同じ型。handoff 91069f62 send-4)
-        if (JSON.stringify(config.staffRoles.map(function (r) { return r && r.token; })) !== JSON.stringify(STAFF_ROLES_V4)) problems.push('staffRoles:v4');
+        // 立場の語は書式の一部(受付は決まった 5 語と照らす。v6 で「労務部」を足した)。並びまで同じでなければ止める
+        // (ROLES_V2 と同じ型。handoff 91069f62 send-4・job-20261119-002 D1)
+        if (JSON.stringify(config.staffRoles.map(function (r) { return r && r.token; })) !== JSON.stringify(STAFF_ROLES_V6)) problems.push('staffRoles:v6');
       }
     }
     (config.roster || []).forEach(function (r, i) {
@@ -1059,7 +1063,7 @@
     LIST_WAIT_MS: LIST_WAIT_MS,
     LIST_RETRY_GAPS_MS: LIST_RETRY_GAPS_MS,
     LIST_FAIL_TEXT: LIST_FAIL_TEXT,
-    STAFF_ROLES_V4: STAFF_ROLES_V4,
+    STAFF_ROLES_V6: STAFF_ROLES_V6,
     ROLES_V5: ROLES_V5,
     MAX_SUB_COMPANY: MAX_SUB_COMPANY,
     SUB_COMPANY_LABEL: SUB_COMPANY_LABEL,
@@ -1489,6 +1493,10 @@
     var needRole = (config.staffRoles || []).length > 0;
     $('self-role').textContent = roleLabel || config.otherRole;
     $('staff-roles').hidden = !needRole;
+    // 立場の選び方の案内(労務部と応援の担当・補助。仕様 job-20261119-002 D2)は立場の欄と一緒に出し入れする。
+    // 公開の直後に古い index.html(案内の段落が無い)と混ざっても止めない
+    var roleNote = $('staff-role-note');
+    if (roleNote) roleNote.hidden = !needRole;
     // 立場を選ぶまで「何を送るか」は押せない
     $('who-self').disabled = needRole && !roleLabel;
     $('who-paper').disabled = needRole && !roleLabel;
