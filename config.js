@@ -104,7 +104,15 @@
       { code: 'P-52', dept: 'B-1' },
       { code: 'P-53', dept: 'B-1' },
       { code: 'P-54', dept: 'B-3' },
-      { code: 'P-55', dept: 'B-3' }
+      { code: 'P-55', dept: 'B-3' },
+      { code: 'P-56', dept: 'B-1' },
+      { code: 'P-57', dept: 'B-1' },
+      { code: 'P-58', dept: 'B-1' },
+      { code: 'P-59', dept: 'B-1' },
+      { code: 'P-60', dept: 'B-3' },
+      { code: 'P-61', dept: 'B-3' },
+      { code: 'P-62', dept: 'B-3' },
+      { code: 'P-63', dept: 'B-3' }
     ]
   };
 
